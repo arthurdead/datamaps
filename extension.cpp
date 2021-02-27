@@ -171,25 +171,18 @@ public:
 	~sp_entity_factory();
 	IServerNetworkable *Create(const char *pClassName)
 	{
-		CBaseEntity *obj = nullptr;
 		IServerNetworkable *net = nullptr;
 		
 		if(based != nullptr) {
 			net = based->Create(pClassName);
-			if(net != nullptr) {
-				obj = net->GetBaseEntity();
-			}
 		} else if(func != nullptr) {
 			cell_t res = 0;
 			func->Execute(&res);
-			obj = (CBaseEntity *)res;
+			CBaseEntity *obj = (CBaseEntity *)res;
 			if(obj != nullptr) {
+				obj->PostConstructor(pClassName);
 				net = obj->GetNetworkable();
 			}
-		}
-		
-		if(obj != nullptr) {
-			obj->PostConstructor(pClassName);
 		}
 		
 		return net;
