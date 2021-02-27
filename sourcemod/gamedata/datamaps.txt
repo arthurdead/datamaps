@@ -1,0 +1,13 @@
+"Games"
+{
+	"tf"
+	{
+		"Offsets"
+		{
+			"CBaseEntity::PostConstructor"
+			{
+				"linux" "27"
+			}
+		}
+	}
+}
