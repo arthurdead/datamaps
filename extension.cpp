@@ -201,6 +201,11 @@ public:
 	IEntityFactory *based = nullptr;
 	IPluginFunction *func = nullptr;
 	bool remove_entities = true;
+	
+	Handle_t hndl = BAD_HANDLE;
+	IPluginContext *pContext = nullptr;
+	bool freehndl = true;
+	bool dont_delete = false;
 };
 
 using factory_map_t = std::unordered_map<std::string, sp_entity_factory *>;
@@ -216,9 +221,18 @@ sp_entity_factory::sp_entity_factory(std::string &&name_, bool remove_entities_)
 
 sp_entity_factory::~sp_entity_factory()
 {
+	dont_delete = true;
+	
 	((CEntityFactoryDictionary *)dictionary)->remove_factory(this, name.c_str(), remove_entities);
 	
 	factory_map.erase(name);
+	
+	if(freehndl) {
+		if(hndl != BAD_HANDLE) {
+			HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+			handlesys->FreeHandle(hndl, &security);
+		}
+	}
 }
 
 enum custom_prop_type
@@ -462,6 +476,13 @@ void CEntityFactoryDictionary::remove_factory(IEntityFactory *fac, std::string_v
 	
 	m_Factories.Remove(name.data());
 	
+	if(fac->GetEntitySize() == (size_t)-1) {
+		sp_entity_factory *sp_fac = (sp_entity_factory *)fac;
+		if(!sp_fac->dont_delete) {
+			delete sp_fac;
+		}
+	}
+	
 	if(remove_entities) {
 		remove_all_entities(name);
 	}
@@ -496,9 +517,11 @@ custom_prop_info_t::~custom_prop_info_t()
 		desc.clear_name();
 	}
 	
-	if(hndl != BAD_HANDLE) {
-		HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
-		handlesys->FreeHandle(hndl, &security);
+	if(freehndl) {
+		if(hndl != BAD_HANDLE) {
+			HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+			handlesys->FreeHandle(hndl, &security);
+		}
 	}
 	
 	if(remove_entities) {
@@ -590,7 +613,12 @@ cell_t register_entity_factory(IPluginContext *pContext, const cell_t *params)
 	}
 	
 	sp_entity_factory *obj = new sp_entity_factory(name, factory, params[3]);
-	return handlesys->CreateHandle(factory_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
+	
+	Handle_t hndl = handlesys->CreateHandle(factory_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
+	obj->hndl = hndl;
+	obj->pContext = pContext;
+	
+	return hndl;
 }
 
 cell_t register_entity_factory_ex(IPluginContext *pContext, const cell_t *params)
@@ -606,7 +634,12 @@ cell_t register_entity_factory_ex(IPluginContext *pContext, const cell_t *params
 	IPluginFunction *callback = pContext->GetFunctionById(params[2]);
 	
 	sp_entity_factory *obj = new sp_entity_factory(name, callback, params[3]);
-	return handlesys->CreateHandle(factory_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
+	
+	Handle_t hndl = handlesys->CreateHandle(factory_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
+	obj->hndl = hndl;
+	obj->pContext = pContext;
+	
+	return hndl;
 }
 
 cell_t has_prop(IPluginContext *pContext, const cell_t *params)
@@ -739,6 +772,7 @@ void Sample::OnHandleDestroy(HandleType_t type, void *object)
 {
 	if(type == factory_handle) {
 		sp_entity_factory *obj = (sp_entity_factory *)object;
+		obj->freehndl = false;
 		delete obj;
 	} else if(type == datamap_handle) {
 		custom_prop_info_t *obj = (custom_prop_info_t *)object;
