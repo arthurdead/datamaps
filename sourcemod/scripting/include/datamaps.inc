@@ -10,9 +10,11 @@ typeset datamaps_functions
 };
 
 native bool entity_factory_exists(const char[] classname);
-native Handle register_entity_factory(const char[] classname, const char[] based);
-native Handle register_entity_factory_ex(const char[] classname, datamaps_functions func);
-native void remove_entity_factory(const char[] classname);
+native bool entity_factory_is_custom(const char[] classname);
+native int get_entity_factory_size(const char[] classname);
+native Handle register_entity_factory(const char[] classname, const char[] based, bool remove_entities = true);
+native Handle register_entity_factory_ex(const char[] classname, datamaps_functions func, int size = -1, bool remove_entities = true);
+native Handle remove_entity_factory(const char[] classname, bool remove_entities = true);
 
 enum custom_prop_type
 {

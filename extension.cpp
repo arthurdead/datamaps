@@ -67,7 +67,6 @@ SMEXT_LINK(&g_Sample);
 
 int CBaseEntityPostConstructor = 0;
 
-IEntityFactoryDictionary *dictionary = nullptr;
 CGlobalVars *gpGlobals = nullptr;
 CBaseEntityList *g_pEntityList = nullptr;
 ISDKHooks *g_pSDKHooks = nullptr;
@@ -75,6 +74,7 @@ IServerTools *servertools = nullptr;
 
 HandleType_t factory_handle = 0;
 HandleType_t datamap_handle = 0;
+HandleType_t removal_handle = 0;
 
 template <typename T>
 T void_to_func(void *ptr)
@@ -152,21 +152,30 @@ public:
 	{
 		remove_factory(fac, get_factory_name(fac), remove_entities);
 	}
+	
+	static bool is_factory_custom(IEntityFactory *fac)
+	{
+		return (fac->GetEntitySize() == (size_t)-1);
+	}
 };
+
+CEntityFactoryDictionary *dictionary = nullptr;
 
 class sp_entity_factory : public IEntityFactory
 {
 	sp_entity_factory(std::string &&name_, bool remove_entities_);
 public:
-	sp_entity_factory(std::string &&name_, IPluginFunction *func_, bool remove_entities_)
+	sp_entity_factory(std::string &&name_, IPluginFunction *func_, size_t size_, bool remove_entities_)
 	: sp_entity_factory(std::move(name_), remove_entities_)
 	{
 		func = func_;
+		size = size_;
 	}
 	sp_entity_factory(std::string &&name_, IEntityFactory *based_, bool remove_entities_)
 		: sp_entity_factory(std::move(name_), remove_entities_)
 	{
 		based = based_;
+		size = based->GetEntitySize();
 	}
 	~sp_entity_factory();
 	IServerNetworkable *Create(const char *pClassName)
@@ -194,11 +203,29 @@ public:
 	IEntityFactory *based = nullptr;
 	IPluginFunction *func = nullptr;
 	bool remove_entities = true;
+	size_t size = 0;
 	
 	Handle_t hndl = BAD_HANDLE;
 	IPluginContext *pContext = nullptr;
 	bool freehndl = true;
 	bool dont_delete = false;
+};
+
+struct factory_removal_t
+{
+	factory_removal_t(std::string &&name_, IEntityFactory *fac_, bool remove_entities)
+		: name{std::move(name_)}, based{fac_}
+	{
+		dictionary->remove_factory(based, name, remove_entities);
+	}
+	
+	~factory_removal_t()
+	{
+		dictionary->InstallFactory(based, name.c_str());
+	}
+	
+	std::string name;
+	IEntityFactory *based;
 };
 
 using factory_map_t = std::unordered_map<std::string, sp_entity_factory *>;
@@ -216,7 +243,7 @@ sp_entity_factory::~sp_entity_factory()
 {
 	dont_delete = true;
 	
-	((CEntityFactoryDictionary *)dictionary)->remove_factory(this, name.c_str(), remove_entities);
+	dictionary->remove_factory(this, name.c_str(), remove_entities);
 	
 	factory_map.erase(name);
 	
@@ -469,7 +496,7 @@ void CEntityFactoryDictionary::remove_factory(IEntityFactory *fac, std::string_v
 	
 	m_Factories.Remove(name.data());
 	
-	if(fac->GetEntitySize() == (size_t)-1) {
+	if(CEntityFactoryDictionary::is_factory_custom(fac)) {
 		sp_entity_factory *sp_fac = (sp_entity_factory *)fac;
 		if(!sp_fac->dont_delete) {
 			delete sp_fac;
@@ -573,6 +600,32 @@ cell_t entity_factory_exists(IPluginContext *pContext, const cell_t *params)
 	return dictionary->FindFactory(name) != nullptr;
 }
 
+cell_t entity_factory_is_custom(IPluginContext *pContext, const cell_t *params)
+{
+	char *name = nullptr;
+	pContext->LocalToString(params[1], &name);
+	
+	IEntityFactory *factory = dictionary->FindFactory(name);
+	if(!factory) {
+		return pContext->ThrowNativeError("invalid classname %s", name);
+	}
+	
+	return CEntityFactoryDictionary::is_factory_custom(factory);
+}
+
+cell_t get_entity_factory_size(IPluginContext *pContext, const cell_t *params)
+{
+	char *name = nullptr;
+	pContext->LocalToString(params[1], &name);
+	
+	IEntityFactory *factory = dictionary->FindFactory(name);
+	if(!factory) {
+		return pContext->ThrowNativeError("invalid classname %s", name);
+	}
+	
+	return factory->GetEntitySize();
+}
+
 cell_t remove_entity_factory(IPluginContext *pContext, const cell_t *params)
 {
 	char *name = nullptr;
@@ -583,8 +636,12 @@ cell_t remove_entity_factory(IPluginContext *pContext, const cell_t *params)
 		return pContext->ThrowNativeError("invalid classname %s", name);
 	}
 	
-	((CEntityFactoryDictionary *)dictionary)->remove_factory(factory, name, params[3]);
-	return 0;
+	if(CEntityFactoryDictionary::is_factory_custom(factory)) {
+		return pContext->ThrowNativeError("cant remove custom factories using this native");
+	}
+	
+	factory_removal_t *obj = new factory_removal_t{name, factory, params[3]};
+	return handlesys->CreateHandle(removal_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 }
 
 cell_t register_entity_factory(IPluginContext *pContext, const cell_t *params)
@@ -626,7 +683,7 @@ cell_t register_entity_factory_ex(IPluginContext *pContext, const cell_t *params
 	
 	IPluginFunction *callback = pContext->GetFunctionById(params[2]);
 	
-	sp_entity_factory *obj = new sp_entity_factory(name, callback, params[3]);
+	sp_entity_factory *obj = new sp_entity_factory(name, callback, params[3], params[4]);
 	
 	Handle_t hndl = handlesys->CreateHandle(factory_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;
@@ -740,9 +797,11 @@ cell_t from_factory(IPluginContext *pContext, const cell_t *params)
 sp_nativeinfo_t natives[] =
 {
 	{"entity_factory_exists", entity_factory_exists},
+	{"entity_factory_is_custom", entity_factory_is_custom},
 	{"register_entity_factory", register_entity_factory},
 	{"register_entity_factory_ex", register_entity_factory_ex},
 	{"remove_entity_factory", remove_entity_factory},
+	{"get_entity_factory_size", get_entity_factory_size},
 	{"CustomDatamap.from_classname", from_classname},
 	{"CustomDatamap.from_factory", from_factory},
 	{"CustomDatamap.has_prop", has_prop},
@@ -771,6 +830,9 @@ void Sample::OnHandleDestroy(HandleType_t type, void *object)
 		custom_prop_info_t *obj = (custom_prop_info_t *)object;
 		obj->freehndl = false;
 		delete obj;
+	} else if(type == removal_handle) {
+		factory_removal_t *obj = (factory_removal_t *)object;
+		delete obj;
 	}
 }
 
@@ -779,7 +841,7 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	gpGlobals = ismm->GetCGlobals();
 	GET_V_IFACE_ANY(GetServerFactory, servertools, IServerTools, VSERVERTOOLS_INTERFACE_VERSION)
 	GET_V_IFACE_ANY(GetEngineFactory, engine, IVEngineServer, INTERFACEVERSION_VENGINESERVER)
-	dictionary = servertools->GetEntityFactoryDictionary();
+	dictionary = (CEntityFactoryDictionary *)servertools->GetEntityFactoryDictionary();
 	SH_ADD_HOOK(IVEngineServer, PvAllocEntPrivateData, engine, SH_STATIC(&HookPvAllocEntPrivateData), false);
 	return true;
 }
@@ -797,6 +859,7 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	
 	factory_handle = handlesys->CreateType("entity_factory", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
 	datamap_handle = handlesys->CreateType("datamap", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
+	removal_handle = handlesys->CreateType("factory_removal", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
 	
 	sharesys->AddDependency(myself, "sdkhooks.ext", true, true);
 	
@@ -845,4 +908,5 @@ void Sample::SDK_OnUnload()
 	plsys->RemovePluginsListener(this);
 	handlesys->RemoveType(factory_handle, myself->GetIdentity());
 	handlesys->RemoveType(datamap_handle, myself->GetIdentity());
+	handlesys->RemoveType(removal_handle, myself->GetIdentity());
 }
