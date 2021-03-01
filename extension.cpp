@@ -221,6 +221,7 @@ struct factory_removal_t
 	
 	~factory_removal_t()
 	{
+		m_Factories.Remove(name.c_str());
 		dictionary->InstallFactory(based, name.c_str());
 	}
 	
