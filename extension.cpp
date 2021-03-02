@@ -41,7 +41,6 @@
 
 #include "extension.h"
 #include <string>
-#include <string_view>
 #include <vector>
 #include <unordered_map>
 #include <mathlib/vmatrix.h>
@@ -98,7 +97,7 @@ public:
 	}
 };
 
-void remove_all_entities(std::string_view name)
+void remove_all_entities(const std::string &name)
 {
 	CBaseEntity *pEntity = nullptr;
 	while(pEntity = servertools->FindEntityByClassname(pEntity, name.data())) {
@@ -107,7 +106,7 @@ void remove_all_entities(std::string_view name)
 }
 
 template <typename T>
-void loop_all_entities(T func, std::string_view name)
+void loop_all_entities(T func, const std::string &name)
 {
 	CBaseEntity *pEntity = nullptr;
 	while(pEntity = servertools->FindEntityByClassname(pEntity, name.data())) {
@@ -131,7 +130,7 @@ public:
 		return nullptr;
 	}
 	
-	IEntityFactory *get_name_factory(std::string_view name)
+	IEntityFactory *get_name_factory(const std::string &name)
 	{
 		for(int i = 0; i < m_Factories.Count(); i++) {
 			if(m_Factories.GetElementName(i) == name) {
@@ -141,9 +140,9 @@ public:
 		return nullptr;
 	}
 	
-	void remove_factory(IEntityFactory *fac, std::string_view name, bool remove_entities = true);
+	void remove_factory(IEntityFactory *fac, const std::string &name, bool remove_entities = true);
 	
-	void remove_factory(std::string_view name, bool remove_entities = true)
+	void remove_factory(const std::string &name, bool remove_entities = true)
 	{
 		remove_factory(get_name_factory(name), name, remove_entities);
 	}
@@ -276,11 +275,11 @@ struct custom_typedescription_t : typedescription_t
 		fieldName = nullptr;
 	}
 	
-	void set_name(std::string_view name)
+	void set_name(const std::string &name)
 	{
 		size_t len = name.length();
 		fieldName = (char *)malloc(len+1);
-		strncpy((char *)fieldName, name.data(), len);
+		strncpy((char *)fieldName, name.c_str(), len);
 		((char *)fieldName)[len] = '\0';
 	}
 	
@@ -299,7 +298,7 @@ struct custom_typedescription_t : typedescription_t
 
 struct custom_datamap_t : datamap_t
 {
-	void set_name(std::string_view name)
+	void set_name(const std::string &name)
 	{
 		size_t len = name.length();
 		dataClassName = (char *)malloc(len+1);
@@ -373,7 +372,7 @@ struct custom_prop_info_t
 		}
 	}
 	
-	bool has_prop(std::string_view name)
+	bool has_prop(const std::string &name)
 	{
 		for(custom_typedescription_t &desc : dataDesc) {
 			if(desc.fieldName == name) {
@@ -384,7 +383,7 @@ struct custom_prop_info_t
 		return false;
 	}
 	
-	void remove_prop(std::string_view name)
+	void remove_prop(const std::string &name)
 	{
 		bool removed = false;
 		
@@ -405,9 +404,10 @@ struct custom_prop_info_t
 		}
 	}
 	
-	void add_prop(std::string_view name, custom_prop_type type)
+	void add_prop(const std::string &name, custom_prop_type type)
 	{
-		custom_typedescription_t &desc = dataDesc.emplace_back();
+		dataDesc.emplace_back();
+		custom_typedescription_t &desc = dataDesc.back();
 		
 		desc.set_name(name);
 		
@@ -481,7 +481,7 @@ custom_prop_info_t *currinfo = nullptr;
 using info_map_t = std::unordered_map<std::string, custom_prop_info_t *>;
 info_map_t info_map{};
 
-void CEntityFactoryDictionary::remove_factory(IEntityFactory *fac, std::string_view name, bool remove_entities)
+void CEntityFactoryDictionary::remove_factory(IEntityFactory *fac, const std::string &name, bool remove_entities)
 {
 	std::string clsname{name};
 	info_map_t::iterator it{info_map.find(clsname)};
