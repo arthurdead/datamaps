@@ -55,6 +55,64 @@
 using vec3_t = vec_t[3];
 using EHANDLE = CHandle<CBaseEntity>;
 
+extern "C"
+{
+__attribute__((__visibility__("default"), __cdecl__)) double __pow_finite(double a, double b)
+{
+	return pow(a, b);
+}
+
+__attribute__((__visibility__("default"), __cdecl__)) double __log_finite(double a)
+{
+	return log(a);
+}
+
+__attribute__((__visibility__("default"), __cdecl__)) double __exp_finite(double a)
+{
+	return exp(a);
+}
+
+__attribute__((__visibility__("default"), __cdecl__)) double __atan2_finite(double a, double b)
+{
+	return atan2(a, b);
+}
+
+__attribute__((__visibility__("default"), __cdecl__)) float __atan2f_finite(float a, float b)
+{
+	return atan2f(a, b);
+}
+
+__attribute__((__visibility__("default"), __cdecl__)) float __powf_finite(float a, float b)
+{
+	return powf(a, b);
+}
+
+__attribute__((__visibility__("default"), __cdecl__)) float __logf_finite(float a)
+{
+	return logf(a);
+}
+
+__attribute__((__visibility__("default"), __cdecl__)) float __expf_finite(float a)
+{
+	return expf(a);
+}
+
+__attribute__((__visibility__("default"), __cdecl__)) float __acosf_finite(float a)
+{
+	return acosf(a);
+}
+
+__attribute__((__visibility__("default"), __cdecl__)) double __asin_finite(double a)
+{
+	return asin(a);
+}
+
+__attribute__((__visibility__("default"), __cdecl__)) double __acos_finite(double a)
+{
+	return acos(a);
+}
+}
+
 /**
  * @file extension.cpp
  * @brief Implement extension code here.
@@ -74,6 +132,8 @@ IServerTools *servertools = nullptr;
 HandleType_t factory_handle = 0;
 HandleType_t datamap_handle = 0;
 HandleType_t removal_handle = 0;
+HandleType_t unexclude_handle = 0;
+HandleType_t addbase_handle = 0;
 
 template <typename T>
 T void_to_func(void *ptr)
@@ -795,6 +855,250 @@ cell_t from_factory(IPluginContext *pContext, const cell_t *params)
 	return hndl;
 }
 
+SendProp *UTIL_FindInSendTable(SendTable *pTable, const char *name, bool recursive, bool ignoreexclude)
+{
+	const char *pname;
+	int props = pTable->GetNumProps();
+	SendProp *prop;
+
+	for (int i=0; i<props; i++)
+	{
+		prop = pTable->GetProp(i);
+		pname = prop->GetName();
+		SendTable *pInnerTable = prop->GetDataTable();
+		if(!ignoreexclude || (ignoreexclude && !prop->IsExcludeProp())) {
+			if (pname && strcmp(name, pname) == 0)
+			{
+				return prop;
+			}
+		}
+		if (pInnerTable)
+		{
+			if(strcmp(pInnerTable->GetName(), name) == 0) {
+				return prop;
+			}
+
+			if(recursive) {
+				prop = UTIL_FindInSendTable(pInnerTable, name, recursive, ignoreexclude);
+				if(prop) {
+					return prop;
+				}
+			}
+		}
+}
+
+	return nullptr;
+}
+
+SendTable *UTIL_FindSendtableInSendTable(SendTable *pTable, const char *name)
+{
+	if(strcmp(pTable->GetName(), name) == 0) {
+		return pTable;
+	}
+	
+	SendProp *prop = UTIL_FindInSendTable(pTable, name, true, true);
+	if(prop) {
+		pTable = prop->GetDataTable();
+		if(prop->GetType() != DPT_DataTable || pTable == nullptr) {
+			return nullptr;
+		}
+		
+		return pTable;
+	}
+	
+	return nullptr;
+}
+
+void assign_prop(SendProp *prop, SendProp *realprop)
+{
+	prop->SetOffset(realprop->GetOffset());
+	prop->SetProxyFn(realprop->GetProxyFn());
+	prop->SetDataTableProxyFn(realprop->GetDataTableProxyFn());
+	prop->SetDataTable(realprop->GetDataTable());
+	prop->SetParentArrayPropName((char *)realprop->GetParentArrayPropName());
+	prop->SetArrayProp(realprop->GetArrayProp());
+	prop->SetArrayLengthProxy(realprop->GetArrayLengthProxy());
+	prop->SetNumElements(realprop->GetNumElements());
+	prop->SetExtraData(realprop->GetExtraData());
+	
+	prop->SetFlags(realprop->GetFlags());
+	if(realprop->IsInsideArray()) {
+		prop->SetInsideArray();
+	}
+	
+	prop->m_Type = realprop->m_Type;
+	prop->m_nBits = realprop->m_nBits;
+	prop->m_fLowValue = realprop->m_fLowValue;
+	prop->m_fHighValue = realprop->m_fHighValue;
+	prop->m_ElementStride = realprop->m_ElementStride;
+	prop->m_pVarName = realprop->m_pVarName;
+	prop->m_fHighLowMul = realprop->m_fHighLowMul;
+}
+
+SendTable *get_send_table(const char *classname, const char *tablename, SendTable **clstable = nullptr)
+{
+	ServerClass *srvcls = gamehelpers->FindServerClass(classname);
+	if(!srvcls) {
+		return nullptr;
+	}
+	
+	if(clstable) {
+		*clstable = srvcls->m_pTable;
+	}
+	
+	return UTIL_FindSendtableInSendTable(srvcls->m_pTable, tablename);
+}
+
+struct unexclude_prop_t
+{
+	unexclude_prop_t(SendProp *prop_, const char *m_pExcludeDTName_, const char *m_pVarName_)
+		: prop{prop_}, m_pExcludeDTName{m_pExcludeDTName_}, m_pVarName{m_pVarName_}
+	{
+		
+	}
+	
+	~unexclude_prop_t()
+	{
+		prop->SetOffset(0);
+		prop->SetProxyFn(nullptr);
+		prop->SetDataTableProxyFn(nullptr);
+		prop->SetDataTable(nullptr);
+		prop->SetParentArrayPropName(nullptr);
+		prop->SetArrayProp(nullptr);
+		prop->SetArrayLengthProxy(nullptr);
+		prop->SetNumElements(0);
+		prop->SetExtraData(nullptr);
+		
+		prop->m_Type = DPT_Int;
+		prop->m_nBits = 0;
+		prop->m_fLowValue = 0;
+		prop->m_fHighValue = 0;
+		prop->m_ElementStride = 0;
+		prop->m_fHighLowMul = 0;
+		
+		prop->m_pExcludeDTName = m_pExcludeDTName;
+		prop->m_pVarName = m_pVarName;
+		prop->SetFlags(SPROP_EXCLUDE);
+	}
+	
+	const char *m_pExcludeDTName = nullptr;
+	const char *m_pVarName = nullptr;
+	SendProp *prop = nullptr;
+};
+
+cell_t unexclude_sendprop(IPluginContext *pContext, const cell_t *params)
+{
+	char *tablename = nullptr;
+	pContext->LocalToString(params[2], &tablename);
+
+	char *name = nullptr;
+	pContext->LocalToString(params[3], &name);
+
+	char *classname = nullptr;
+	pContext->LocalToString(params[1], &classname);
+
+	SendTable *clstable = nullptr;
+	SendTable *table = get_send_table(classname, tablename, &clstable);
+	if(!table) {
+		return pContext->ThrowNativeError("invalid classname or table %s, %s", classname, tablename);
+	}
+
+	SendProp *prop = UTIL_FindInSendTable(table, name, false, false);
+	if(!prop) {
+		return pContext->ThrowNativeError("%s is not in %s", name, tablename);
+	}
+
+	if(!prop->IsExcludeProp()) {
+		return 0;
+	}
+	
+	int flags = prop->GetFlags();
+	flags &= ~SPROP_EXCLUDE;
+	prop->SetFlags(flags);
+
+	const char *m_pExcludeDTName = prop->m_pExcludeDTName;
+	const char *m_pVarName = prop->m_pVarName;
+	
+	prop->m_pExcludeDTName = nullptr;
+	prop->m_pVarName = nullptr;
+
+	SendTable *base = UTIL_FindSendtableInSendTable(clstable, m_pExcludeDTName);
+	if(base) {
+		SendProp *realprop = UTIL_FindInSendTable(base, name, true, true);
+		if(realprop) {
+			assign_prop(prop, realprop);
+		} else {
+			printf("%s not found in %s\n", name, base->GetName());
+		}
+	} else {
+		printf("%s not found in %s\n", m_pExcludeDTName, clstable->GetName());
+	}
+
+	unexclude_prop_t *obj = new unexclude_prop_t(prop, m_pExcludeDTName, m_pVarName);
+	return handlesys->CreateHandle(unexclude_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
+}
+
+struct addbaseclass_t
+{
+	addbaseclass_t(SendTable *table1, SendTable *table2)
+		: table{table1}
+	{
+		m_pProps = table1->m_pProps;
+		++table1->m_nProps;
+		
+		table1->m_pProps = new SendProp[table1->m_nProps];
+		
+		for(int i = 1; i < table1->m_nProps; ++i) {
+			SendProp *prop = &table1->m_pProps[i];
+			SendProp *realprop = &m_pProps[i-1];
+			assign_prop(prop, realprop);
+		}
+		
+		SendProp *prop = &table1->m_pProps[0];
+		prop->m_Type = DPT_DataTable;
+		prop->m_pVarName = "baseclass";
+		prop->SetOffset(0);
+		prop->SetDataTable(table2);
+		prop->SetDataTableProxyFn(SendProxy_DataTableToDataTable);
+		prop->SetFlags(SPROP_PROXY_ALWAYS_YES|SPROP_COLLAPSIBLE);
+	}
+	
+	~addbaseclass_t()
+	{
+		--table->m_nProps;
+		delete[] table->m_pProps;
+		table->m_pProps = m_pProps;
+	}
+	
+	SendProp *m_pProps = nullptr;
+	SendTable *table = nullptr;
+};
+
+cell_t sendtable_addbaseclass(IPluginContext *pContext, const cell_t *params)
+{
+	char *classname = nullptr;
+	pContext->LocalToString(params[1], &classname);
+	
+	char *tablename = nullptr;
+	pContext->LocalToString(params[2], &tablename);
+
+	SendTable *table1 = get_send_table(classname, tablename, nullptr);
+	if(!table1) {
+		return pContext->ThrowNativeError("invalid classname or table %s, %s", classname, tablename);
+	}
+
+	pContext->LocalToString(params[3], &classname);
+	pContext->LocalToString(params[4], &tablename);
+
+	SendTable *table2 = get_send_table(classname, tablename, nullptr);
+	if(!table2) {
+		return pContext->ThrowNativeError("invalid classname or table %s, %s", classname, tablename);
+	}
+
+	addbaseclass_t *obj = new addbaseclass_t(table1, table2);
+	return handlesys->CreateHandle(addbase_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
+}
+
 sp_nativeinfo_t natives[] =
 {
 	{"entity_factory_exists", entity_factory_exists},
@@ -808,6 +1112,8 @@ sp_nativeinfo_t natives[] =
 	{"CustomDatamap.has_prop", has_prop},
 	{"CustomDatamap.remove_prop", remove_prop},
 	{"CustomDatamap.add_prop", add_prop},
+	{"unexclude_sendprop", unexclude_sendprop},
+	{"sendtable_addbaseclass", sendtable_addbaseclass},
 	{NULL, NULL}
 };
 
@@ -833,6 +1139,12 @@ void Sample::OnHandleDestroy(HandleType_t type, void *object)
 		delete obj;
 	} else if(type == removal_handle) {
 		factory_removal_t *obj = (factory_removal_t *)object;
+		delete obj;
+	} else if(type == unexclude_handle) {
+		unexclude_prop_t *obj = (unexclude_prop_t *)object;
+		delete obj;
+	} else if(type == addbase_handle) {
+		addbaseclass_t *obj = (addbaseclass_t *)object;
 		delete obj;
 	}
 }
@@ -861,6 +1173,8 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	factory_handle = handlesys->CreateType("entity_factory", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
 	datamap_handle = handlesys->CreateType("datamap", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
 	removal_handle = handlesys->CreateType("factory_removal", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
+	unexclude_handle = handlesys->CreateType("unexclude_prop", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
+	addbase_handle = handlesys->CreateType("add_baseclass", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
 	
 	sharesys->AddDependency(myself, "sdkhooks.ext", true, true);
 	
@@ -910,4 +1224,6 @@ void Sample::SDK_OnUnload()
 	handlesys->RemoveType(factory_handle, myself->GetIdentity());
 	handlesys->RemoveType(datamap_handle, myself->GetIdentity());
 	handlesys->RemoveType(removal_handle, myself->GetIdentity());
+	handlesys->RemoveType(unexclude_handle, myself->GetIdentity());
+	handlesys->RemoveType(addbase_handle, myself->GetIdentity());
 }
