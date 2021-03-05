@@ -160,7 +160,7 @@ public:
 void remove_all_entities(const std::string &name)
 {
 	CBaseEntity *pEntity = nullptr;
-	while(pEntity = servertools->FindEntityByClassname(pEntity, name.data())) {
+	while(pEntity = servertools->FindEntityByClassname(pEntity, name.c_str())) {
 		servertools->RemoveEntity(pEntity);
 	}
 }
@@ -169,7 +169,7 @@ template <typename T>
 void loop_all_entities(T func, const std::string &name)
 {
 	CBaseEntity *pEntity = nullptr;
-	while(pEntity = servertools->FindEntityByClassname(pEntity, name.data())) {
+	while(pEntity = servertools->FindEntityByClassname(pEntity, name.c_str())) {
 		func(pEntity);
 	}
 }
@@ -262,7 +262,7 @@ public:
 	IEntityFactory *based = nullptr;
 	IPluginFunction *func = nullptr;
 	bool remove_entities = true;
-	size_t size = 0;
+	size_t size = (size_t)-1;
 	
 	Handle_t hndl = BAD_HANDLE;
 	IPluginContext *pContext = nullptr;
@@ -362,7 +362,7 @@ struct custom_datamap_t : datamap_t
 	{
 		size_t len = name.length();
 		dataClassName = (char *)malloc(len+1);
-		strncpy((char *)dataClassName, name.data(), len);
+		strncpy((char *)dataClassName, name.c_str(), len);
 		((char *)dataClassName)[len] = '\0';
 	}
 	
@@ -409,13 +409,14 @@ struct custom_prop_info_t
 	void zero(CBaseEntity *pEntity)
 	{
 		for(custom_typedescription_t &desc : dataDesc) {
+			int offset = desc.fieldOffset[TD_OFFSET_NORMAL];
 			switch(desc.fieldType) {
-				case FIELD_INTEGER: { *(int *)(((unsigned char *)pEntity) + desc.fieldOffset[TD_OFFSET_NORMAL]) = 0; break; }
-				case FIELD_FLOAT: { *(float *)(((unsigned char *)pEntity) + desc.fieldOffset[TD_OFFSET_NORMAL]) = 0.0f; break; }
-				case FIELD_BOOLEAN: { *(bool *)(((unsigned char *)pEntity) + desc.fieldOffset[TD_OFFSET_NORMAL]) = false; break; }
-				case FIELD_EHANDLE: { *(EHANDLE *)(((unsigned char *)pEntity) + desc.fieldOffset[TD_OFFSET_NORMAL]) = nullptr; break; }
+				case FIELD_INTEGER: { *(int *)(((unsigned char *)pEntity) + offset) = 0; break; }
+				case FIELD_FLOAT: { *(float *)(((unsigned char *)pEntity) + offset) = 0.0f; break; }
+				case FIELD_BOOLEAN: { *(bool *)(((unsigned char *)pEntity) + offset) = false; break; }
+				case FIELD_EHANDLE: { *(EHANDLE *)(((unsigned char *)pEntity) + offset) = nullptr; break; }
 				case FIELD_VECTOR: {
-					vec3_t &vec = *(vec3_t *)(((unsigned char *)pEntity) + desc.fieldOffset[TD_OFFSET_NORMAL]);
+					vec3_t &vec = *(vec3_t *)(((unsigned char *)pEntity) + offset);
 					vec[0] = 0.0f;
 					vec[1] = 0.0f;
 					vec[2] = 0.0f;
@@ -543,8 +544,7 @@ info_map_t info_map{};
 
 void CEntityFactoryDictionary::remove_factory(IEntityFactory *fac, const std::string &name, bool remove_entities)
 {
-	std::string clsname{name};
-	info_map_t::iterator it{info_map.find(clsname)};
+	info_map_t::iterator it{info_map.find(name)};
 	if(it != info_map.end()) {
 		custom_prop_info_t *prop{it->second};
 		prop->erase = false;
@@ -555,7 +555,7 @@ void CEntityFactoryDictionary::remove_factory(IEntityFactory *fac, const std::st
 		info_map.erase(it);
 	}
 	
-	m_Factories.Remove(name.data());
+	m_Factories.Remove(name.c_str());
 	
 	if(CEntityFactoryDictionary::is_factory_custom(fac)) {
 		sp_entity_factory *sp_fac = (sp_entity_factory *)fac;
@@ -589,10 +589,14 @@ custom_prop_info_t::~custom_prop_info_t()
 	
 	SH_REMOVE_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &custom_prop_info_t::HookCreate), false);
 	
-	loop_all_entities([this](CBaseEntity *pEntity){
-		SH_REMOVE_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
-		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
-	}, clsname);
+	if(!remove_entities) {
+		loop_all_entities([this](CBaseEntity *pEntity){
+			SH_REMOVE_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
+			SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
+		}, clsname);
+	} else {
+		remove_all_entities(clsname);
+	}
 	
 	for(custom_typedescription_t &desc : dataDesc) {
 		desc.clear_name();
@@ -603,10 +607,6 @@ custom_prop_info_t::~custom_prop_info_t()
 			HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
 			handlesys->FreeHandle(hndl, &security);
 		}
-	}
-	
-	if(remove_entities) {
-		remove_all_entities(clsname);
 	}
 }
 
@@ -821,6 +821,7 @@ cell_t from_classname(IPluginContext *pContext, const cell_t *params)
 	}
 	
 	custom_prop_info_t *obj = new custom_prop_info_t(factory, name);
+	obj->remove_entities = params[2];
 
 	Handle_t hndl = handlesys->CreateHandle(datamap_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;
@@ -847,6 +848,7 @@ cell_t from_factory(IPluginContext *pContext, const cell_t *params)
 	}
 	
 	custom_prop_info_t *obj = new custom_prop_info_t(factory, std::move(name));
+	obj->remove_entities = params[2];
 
 	Handle_t hndl = handlesys->CreateHandle(datamap_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;

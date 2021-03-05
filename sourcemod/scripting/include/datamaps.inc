@@ -27,8 +27,8 @@ enum custom_prop_type
 
 methodmap CustomDatamap < Handle
 {
-	public static native CustomDatamap from_classname(const char[] classname);
-	public static native CustomDatamap from_factory(Handle factory);
+	public static native CustomDatamap from_classname(const char[] classname, bool remove_entities = true);
+	public static native CustomDatamap from_factory(Handle factory, bool remove_entities = true);
 
 	public native bool has_prop(const char[] name);
 	public native void remove_prop(const char[] name);
