@@ -581,11 +581,15 @@ custom_prop_info_t::custom_prop_info_t(IEntityFactory *fac_, std::string &&clsna
 	info_map[clsname] = this;
 }
 
+extern void remove_datamap_from_sm_cache(datamap_t *pMap);
+
 custom_prop_info_t::~custom_prop_info_t()
 {
 	if(erase) {
 		info_map.erase(clsname);
 	}
+	
+	remove_datamap_from_sm_cache(&map);
 	
 	SH_REMOVE_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &custom_prop_info_t::HookCreate), false);
 	
