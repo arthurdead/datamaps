@@ -142,8 +142,6 @@ IServer *server = nullptr;
 HandleType_t factory_handle = 0;
 HandleType_t datamap_handle = 0;
 HandleType_t removal_handle = 0;
-HandleType_t unexclude_handle = 0;
-HandleType_t addbase_handle = 0;
 HandleType_t serverclass_handle = 0;
 
 template <typename R, typename T, typename ...Args>
@@ -482,27 +480,6 @@ SH_DECL_HOOK0(CBaseEntity, GetServerClass, SH_NOATTRIB, 0, ServerClass *);
 class custom_ServerClass
 {
 public:
-	void set_name(const std::string &name)
-	{
-		size_t len = name.length();
-		m_pNetworkName = (char *)malloc(len+1);
-		strncpy((char *)m_pNetworkName, name.c_str(), len);
-		((char *)m_pNetworkName)[len] = '\0';
-	}
-	
-	void clear_name()
-	{
-		if(m_pNetworkName != nullptr) {
-			free((void *)m_pNetworkName);
-		}
-		m_pNetworkName = nullptr;
-	}
-	
-	~custom_ServerClass()
-	{
-		//clear_name();
-	}
-	
 	const char					*m_pNetworkName;
 	SendTable					*m_pTable;
 	ServerClass					*m_pNext;
@@ -512,9 +489,142 @@ public:
 	int							m_InstanceBaselineIndex; // INVALID_STRING_INDEX if not initialized yet.
 };
 
+SendProp *UTIL_FindInSendTable(SendTable *pTable, const char *name, bool recursive, bool ignoreexclude)
+{
+	const char *pname;
+	int props = pTable->GetNumProps();
+	SendProp *prop;
+
+	for (int i=0; i<props; i++)
+	{
+		prop = pTable->GetProp(i);
+		pname = prop->GetName();
+		SendTable *pInnerTable = prop->GetDataTable();
+		if(!ignoreexclude || (ignoreexclude && !prop->IsExcludeProp())) {
+			if (pname && strcmp(name, pname) == 0)
+			{
+				return prop;
+			}
+		}
+		if (pInnerTable)
+		{
+			if(strcmp(pInnerTable->GetName(), name) == 0) {
+				return prop;
+			}
+
+			if(recursive) {
+				prop = UTIL_FindInSendTable(pInnerTable, name, recursive, ignoreexclude);
+				if(prop) {
+					return prop;
+				}
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+SendTable *UTIL_FindSendtableInSendTable(SendTable *pTable, const char *name)
+{
+	if(strcmp(pTable->GetName(), name) == 0) {
+		return pTable;
+	}
+	
+	SendProp *prop = UTIL_FindInSendTable(pTable, name, true, true);
+	if(prop) {
+		pTable = prop->GetDataTable();
+		if(prop->GetType() != DPT_DataTable || pTable == nullptr) {
+			return nullptr;
+		}
+		
+		return pTable;
+	}
+	
+	return nullptr;
+}
+
+void assign_prop(SendProp *prop, SendProp *realprop)
+{
+	prop->SetOffset(realprop->GetOffset());
+	prop->SetProxyFn(realprop->GetProxyFn());
+	prop->SetDataTableProxyFn(realprop->GetDataTableProxyFn());
+	prop->SetDataTable(realprop->GetDataTable());
+	prop->SetParentArrayPropName((char *)realprop->GetParentArrayPropName());
+	prop->SetArrayProp(realprop->GetArrayProp());
+	prop->SetArrayLengthProxy(realprop->GetArrayLengthProxy());
+	prop->SetNumElements(realprop->GetNumElements());
+	prop->SetExtraData(realprop->GetExtraData());
+	
+	prop->SetFlags(realprop->GetFlags());
+	if(realprop->IsInsideArray()) {
+		prop->SetInsideArray();
+	}
+	
+	prop->m_Type = realprop->m_Type;
+	prop->m_nBits = realprop->m_nBits;
+	prop->m_fLowValue = realprop->m_fLowValue;
+	prop->m_fHighValue = realprop->m_fHighValue;
+	prop->m_ElementStride = realprop->m_ElementStride;
+	prop->m_pVarName = realprop->m_pVarName;
+	prop->m_fHighLowMul = realprop->m_fHighLowMul;
+}
+
+SendTable *get_send_table(const char *classname, const char *tablename, SendTable **clstable = nullptr)
+{
+	ServerClass *srvcls = gamehelpers->FindServerClass(classname);
+	if(!srvcls) {
+		return nullptr;
+	}
+	
+	if(clstable) {
+		*clstable = srvcls->m_pTable;
+	}
+	
+	return UTIL_FindSendtableInSendTable(srvcls->m_pTable, tablename);
+}
+
+struct unexclude_prop_t
+{
+	unexclude_prop_t(SendProp *prop_, const char *m_pExcludeDTName_, const char *m_pVarName_)
+		: prop{prop_}, m_pExcludeDTName{m_pExcludeDTName_}, m_pVarName{m_pVarName_}
+	{
+		
+	}
+	
+	~unexclude_prop_t()
+	{
+		if(prop) {
+			prop->SetOffset(0);
+			prop->SetProxyFn(nullptr);
+			prop->SetDataTableProxyFn(nullptr);
+			prop->SetDataTable(nullptr);
+			prop->SetParentArrayPropName(nullptr);
+			prop->SetArrayProp(nullptr);
+			prop->SetArrayLengthProxy(nullptr);
+			prop->SetNumElements(0);
+			prop->SetExtraData(nullptr);
+			
+			prop->m_Type = DPT_Int;
+			prop->m_nBits = 0;
+			prop->m_fLowValue = 0;
+			prop->m_fHighValue = 0;
+			prop->m_ElementStride = 0;
+			prop->m_fHighLowMul = 0;
+			
+			prop->m_pExcludeDTName = m_pExcludeDTName;
+			prop->m_pVarName = m_pVarName;
+			prop->SetFlags(SPROP_EXCLUDE);
+		}
+	}
+	
+	const char *m_pExcludeDTName = nullptr;
+	const char *m_pVarName = nullptr;
+	SendProp *prop = nullptr;
+};
+
 struct serverclass_override_t
 {
-	serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_, ServerClass *fakecls_);
+	serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_);
 	~serverclass_override_t();
 	
 	IServerNetworkable *HookCreate(const char *classname);
@@ -533,9 +643,15 @@ struct serverclass_override_t
 	
 	void do_override(CBaseEntity *pEntity);
 	
+	void override_with(ServerClass *netclass);
+	void set_base_class(SendTable *table);
+	void unexclude_prop(SendProp *prop, SendProp *realprop);
+	
 	IEntityFactory *fac = nullptr;
 	bool fac_is_sp = false;
 	custom_ServerClass cls{};
+	SendTable tbl{};
+	std::vector<SendProp> props{};
 	ServerClass *realcls = nullptr;
 	ServerClass *fakecls = nullptr;
 	std::string clsname{};
@@ -544,6 +660,9 @@ struct serverclass_override_t
 	bool erase = true;
 	bool freehndl = true;
 	bool was_overriden = false;
+	bool base_class_set = false;
+	SendProp *m_pProps = nullptr;
+	std::vector<unexclude_prop_t> exclude_props{};
 };
 
 class sp_entity_factory : public IEntityFactory
@@ -634,7 +753,7 @@ sp_entity_factory::~sp_entity_factory()
 	}
 }
 
-custom_prop_info_t *currinfo = nullptr;
+custom_prop_info_t *curr_data_info = nullptr;
 
 using info_map_t = std::unordered_map<std::string, custom_prop_info_t *>;
 info_map_t info_map{};
@@ -717,8 +836,64 @@ public:
 	}
 };
 
-serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_, ServerClass *fakecls_)
-	: fac{fac_}, clsname{std::move(clsname_)}, realcls{realcls_}, fakecls{fakecls_}
+void serverclass_override_t::override_with(ServerClass *netclass)
+{
+	fakecls = netclass;
+	
+	tbl.m_pNetTableName = fakecls->m_pTable->m_pNetTableName;
+	
+	cls.m_ClassID = fakecls->m_ClassID;
+	cls.m_pNetworkName = fakecls->m_pNetworkName;
+	cls.m_InstanceBaselineIndex = fakecls->m_InstanceBaselineIndex;
+}
+
+void serverclass_override_t::unexclude_prop(SendProp *prop, SendProp *realprop)
+{
+	const char *m_pExcludeDTName = prop->m_pExcludeDTName;
+	const char *m_pVarName = prop->m_pVarName;
+	
+	if(realprop) {
+		assign_prop(prop, realprop);
+	}
+	
+	int flags = prop->GetFlags();
+	flags &= ~SPROP_EXCLUDE;
+	prop->SetFlags(flags);
+	
+	prop->m_pExcludeDTName = nullptr;
+	
+	unexclude_prop_t unex{prop, m_pExcludeDTName, m_pVarName};
+	exclude_props.emplace_back(std::move(unex));
+}
+
+void serverclass_override_t::set_base_class(SendTable *table2)
+{
+	SendTable *table1 = realcls->m_pTable;
+	
+	m_pProps = table1->m_pProps;
+	++table1->m_nProps;
+	
+	table1->m_pProps = new SendProp[table1->m_nProps];
+	
+	for(int i = 1; i < table1->m_nProps; ++i) {
+		SendProp *prop = &table1->m_pProps[i];
+		SendProp *realprop = &m_pProps[i-1];
+		assign_prop(prop, realprop);
+	}
+	
+	SendProp *prop = &table1->m_pProps[0];
+	prop->m_Type = DPT_DataTable;
+	prop->m_pVarName = "baseclass";
+	prop->SetOffset(0);
+	prop->SetDataTable(table2);
+	prop->SetDataTableProxyFn(SendProxy_DataTableToDataTable);
+	prop->SetFlags(SPROP_PROXY_ALWAYS_YES|SPROP_COLLAPSIBLE);
+	
+	base_class_set = true;
+}
+
+serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_)
+	: fac{fac_}, clsname{std::move(clsname_)}, realcls{realcls_}
 {
 	if(CEntityFactoryDictionary::is_factory_custom(fac)) {
 		fac_is_sp = true;
@@ -730,7 +905,25 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	
 	server_map[clsname] = this;
 	
-	cls.m_pTable = realcls->m_pTable;
+	props.emplace_back();
+	SendProp *prop = &props.back();
+	prop->m_Type = DPT_DataTable;
+	prop->m_pVarName = "baseclass";
+	prop->SetOffset(0);
+	prop->SetDataTable(realcls->m_pTable);
+	prop->SetDataTableProxyFn(SendProxy_DataTableToDataTable);
+	prop->SetFlags(SPROP_PROXY_ALWAYS_YES|SPROP_COLLAPSIBLE);
+	
+	tbl.m_pProps = props.data();
+	tbl.m_nProps = props.size();
+	tbl.m_pNetTableName = realcls->m_pTable->m_pNetTableName;
+	tbl.m_pPrecalc = realcls->m_pTable->m_pPrecalc;
+	
+	cls.m_pTable = &tbl;
+	
+	cls.m_ClassID = realcls->m_ClassID;
+	cls.m_pNetworkName = realcls->m_pNetworkName;
+	cls.m_InstanceBaselineIndex = realcls->m_InstanceBaselineIndex;
 	
 	if(!custom_server_head) {
 		custom_server_head = (ServerClass *)&cls;
@@ -739,10 +932,6 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 		custom_server_head->m_pNext = (ServerClass *)&cls;
 		custom_server_head = custom_server_head->m_pNext;
 	}
-	
-	cls.m_ClassID = fakecls->m_ClassID;
-	cls.m_pNetworkName = fakecls->m_pNetworkName;
-	cls.m_InstanceBaselineIndex = fakecls->m_InstanceBaselineIndex;
 	
 	((CBaseServer *)server)->increment_svclasses();
 }
@@ -769,6 +958,16 @@ serverclass_override_t::~serverclass_override_t()
 	
 	if(!custom_server_head) {
 		g_pServerClassTail->m_pNext = nullptr;
+	}
+	
+	exclude_props.clear();
+	
+	if(base_class_set) {
+		SendTable *table1 = realcls->m_pTable;
+		
+		--table1->m_nProps;
+		delete[] table1->m_pProps;
+		table1->m_pProps = m_pProps;
 	}
 	
 	((CBaseServer *)server)->decrement_svclasses();
@@ -914,9 +1113,9 @@ IServerNetworkable *custom_prop_info_t::HookCreate(const char *classname)
 {
 	IEntityFactory *fac = META_IFACEPTR(IEntityFactory);
 	
-	currinfo = this;
+	curr_data_info = this;
 	IServerNetworkable *net = SH_CALL(fac, &IEntityFactory::Create)(classname);
-	currinfo = nullptr;
+	curr_data_info = nullptr;
 	
 	CBaseEntity *pEntity = net->GetBaseEntity();
 	
@@ -939,50 +1138,28 @@ IServerNetworkable *serverclass_override_t::HookCreate(const char *classname)
 
 void *HookPvAllocEntPrivateData(long cb)
 {
-	if(currinfo != nullptr) {
+	if(curr_data_info != nullptr) {
 		last_cb = cb;
-		cb += currinfo->size;
+		cb += curr_data_info->size;
 		RETURN_META_VALUE_NEWPARAMS(MRES_HANDLED, nullptr, &IVEngineServer::PvAllocEntPrivateData, (cb));
 	} else {
 		RETURN_META_VALUE(MRES_IGNORED, nullptr);
 	}
 }
 
-cell_t entity_factory_exists(IPluginContext *pContext, const cell_t *params)
+cell_t IEntityFactoryCustomget(IPluginContext *pContext, const cell_t *params)
 {
-	char *name = nullptr;
-	pContext->LocalToString(params[1], &name);
-	
-	return dictionary->FindFactory(name) != nullptr;
-}
-
-cell_t entity_factory_is_custom(IPluginContext *pContext, const cell_t *params)
-{
-	char *name = nullptr;
-	pContext->LocalToString(params[1], &name);
-	
-	IEntityFactory *factory = dictionary->FindFactory(name);
-	if(!factory) {
-		return pContext->ThrowNativeError("invalid classname %s", name);
-	}
-	
+	IEntityFactory *factory = (IEntityFactory *)params[1];
 	return CEntityFactoryDictionary::is_factory_custom(factory);
 }
 
-cell_t get_entity_factory_size(IPluginContext *pContext, const cell_t *params)
+cell_t IEntityFactorySizeget(IPluginContext *pContext, const cell_t *params)
 {
-	char *name = nullptr;
-	pContext->LocalToString(params[1], &name);
-	
-	IEntityFactory *factory = dictionary->FindFactory(name);
-	if(!factory) {
-		return pContext->ThrowNativeError("invalid classname %s", name);
-	}
-	
+	IEntityFactory *factory = (IEntityFactory *)params[1];
 	return factory->GetEntitySize();
 }
 
-cell_t remove_entity_factory(IPluginContext *pContext, const cell_t *params)
+cell_t EntityFactoryDictionaryremove(IPluginContext *pContext, const cell_t *params)
 {
 	char *name = nullptr;
 	pContext->LocalToString(params[1], &name);
@@ -1000,7 +1177,7 @@ cell_t remove_entity_factory(IPluginContext *pContext, const cell_t *params)
 	return handlesys->CreateHandle(removal_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 }
 
-cell_t register_entity_factory(IPluginContext *pContext, const cell_t *params)
+cell_t EntityFactoryDictionaryregister_based(IPluginContext *pContext, const cell_t *params)
 {
 	char *name = nullptr;
 	pContext->LocalToString(params[1], &name);
@@ -1009,14 +1186,8 @@ cell_t register_entity_factory(IPluginContext *pContext, const cell_t *params)
 	if(factory) {
 		return pContext->ThrowNativeError("%s is already registered", name);
 	}
-	
-	char *based = nullptr;
-	pContext->LocalToString(params[2], &based);
 
-	factory = dictionary->FindFactory(based);
-	if(!factory) {
-		return pContext->ThrowNativeError("invalid classname %s", based);
-	}
+	factory = (IEntityFactory *)params[2];
 	
 	sp_entity_factory *obj = new sp_entity_factory(name, factory);
 	
@@ -1027,7 +1198,7 @@ cell_t register_entity_factory(IPluginContext *pContext, const cell_t *params)
 	return hndl;
 }
 
-cell_t register_entity_factory_ex(IPluginContext *pContext, const cell_t *params)
+cell_t EntityFactoryDictionaryregister_function(IPluginContext *pContext, const cell_t *params)
 {
 	char *name = nullptr;
 	pContext->LocalToString(params[1], &name);
@@ -1052,42 +1223,7 @@ cell_t register_entity_factory_ex(IPluginContext *pContext, const cell_t *params
 	return hndl;
 }
 
-cell_t has_prop(IPluginContext *pContext, const cell_t *params)
-{
-	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
-	
-	custom_prop_info_t *obj = nullptr;
-	HandleError err = handlesys->ReadHandle(params[1], datamap_handle, &security, (void **)&obj);
-	if(err != HandleError_None)
-	{
-		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
-	}
-	
-	char *name = nullptr;
-	pContext->LocalToString(params[2], &name);
-	
-	return obj->has_prop(name);
-}
-
-cell_t remove_prop(IPluginContext *pContext, const cell_t *params)
-{
-	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
-	
-	custom_prop_info_t *obj = nullptr;
-	HandleError err = handlesys->ReadHandle(params[1], datamap_handle, &security, (void **)&obj);
-	if(err != HandleError_None)
-	{
-		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
-	}
-	
-	char *name = nullptr;
-	pContext->LocalToString(params[2], &name);
-	
-	obj->remove_prop(name);
-	return 0;
-}
-
-cell_t add_prop(IPluginContext *pContext, const cell_t *params)
+cell_t CustomDatamapadd_prop(IPluginContext *pContext, const cell_t *params)
 {
 	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
 	
@@ -1105,7 +1241,7 @@ cell_t add_prop(IPluginContext *pContext, const cell_t *params)
 	return 0;
 }
 
-cell_t from_classname(IPluginContext *pContext, const cell_t *params)
+cell_t CustomDatamapfrom_classname(IPluginContext *pContext, const cell_t *params)
 {
 	char *name = nullptr;
 	pContext->LocalToString(params[1], &name);
@@ -1128,7 +1264,7 @@ cell_t from_classname(IPluginContext *pContext, const cell_t *params)
 	return hndl;
 }
 
-cell_t from_factory(IPluginContext *pContext, const cell_t *params)
+cell_t CustomDatamapfrom_factory(IPluginContext *pContext, const cell_t *params)
 {
 	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
 	
@@ -1154,152 +1290,27 @@ cell_t from_factory(IPluginContext *pContext, const cell_t *params)
 	return hndl;
 }
 
-SendProp *UTIL_FindInSendTable(SendTable *pTable, const char *name, bool recursive, bool ignoreexclude)
+cell_t CustomSendtableunexclude_prop(IPluginContext *pContext, const cell_t *params)
 {
-	const char *pname;
-	int props = pTable->GetNumProps();
-	SendProp *prop;
-
-	for (int i=0; i<props; i++)
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	serverclass_override_t *factory = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
+	if(err != HandleError_None)
 	{
-		prop = pTable->GetProp(i);
-		pname = prop->GetName();
-		SendTable *pInnerTable = prop->GetDataTable();
-		if(!ignoreexclude || (ignoreexclude && !prop->IsExcludeProp())) {
-			if (pname && strcmp(name, pname) == 0)
-			{
-				return prop;
-			}
-		}
-		if (pInnerTable)
-		{
-			if(strcmp(pInnerTable->GetName(), name) == 0) {
-				return prop;
-			}
-
-			if(recursive) {
-				prop = UTIL_FindInSendTable(pInnerTable, name, recursive, ignoreexclude);
-				if(prop) {
-					return prop;
-				}
-			}
-		}
-	}
-
-	return nullptr;
-}
-
-SendTable *UTIL_FindSendtableInSendTable(SendTable *pTable, const char *name)
-{
-	if(strcmp(pTable->GetName(), name) == 0) {
-		return pTable;
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
 	}
 	
-	SendProp *prop = UTIL_FindInSendTable(pTable, name, true, true);
-	if(prop) {
-		pTable = prop->GetDataTable();
-		if(prop->GetType() != DPT_DataTable || pTable == nullptr) {
-			return nullptr;
-		}
-		
-		return pTable;
-	}
-	
-	return nullptr;
-}
-
-void assign_prop(SendProp *prop, SendProp *realprop)
-{
-	prop->SetOffset(realprop->GetOffset());
-	prop->SetProxyFn(realprop->GetProxyFn());
-	prop->SetDataTableProxyFn(realprop->GetDataTableProxyFn());
-	prop->SetDataTable(realprop->GetDataTable());
-	prop->SetParentArrayPropName((char *)realprop->GetParentArrayPropName());
-	prop->SetArrayProp(realprop->GetArrayProp());
-	prop->SetArrayLengthProxy(realprop->GetArrayLengthProxy());
-	prop->SetNumElements(realprop->GetNumElements());
-	prop->SetExtraData(realprop->GetExtraData());
-	
-	prop->SetFlags(realprop->GetFlags());
-	if(realprop->IsInsideArray()) {
-		prop->SetInsideArray();
-	}
-	
-	prop->m_Type = realprop->m_Type;
-	prop->m_nBits = realprop->m_nBits;
-	prop->m_fLowValue = realprop->m_fLowValue;
-	prop->m_fHighValue = realprop->m_fHighValue;
-	prop->m_ElementStride = realprop->m_ElementStride;
-	prop->m_pVarName = realprop->m_pVarName;
-	prop->m_fHighLowMul = realprop->m_fHighLowMul;
-}
-
-SendTable *get_send_table(const char *classname, const char *tablename, SendTable **clstable = nullptr)
-{
-	ServerClass *srvcls = gamehelpers->FindServerClass(classname);
-	if(!srvcls) {
-		return nullptr;
-	}
-	
-	if(clstable) {
-		*clstable = srvcls->m_pTable;
-	}
-	
-	return UTIL_FindSendtableInSendTable(srvcls->m_pTable, tablename);
-}
-
-struct unexclude_prop_t
-{
-	unexclude_prop_t(SendProp *prop_, const char *m_pExcludeDTName_, const char *m_pVarName_)
-		: prop{prop_}, m_pExcludeDTName{m_pExcludeDTName_}, m_pVarName{m_pVarName_}
-	{
-		
-	}
-	
-	~unexclude_prop_t()
-	{
-		prop->SetOffset(0);
-		prop->SetProxyFn(nullptr);
-		prop->SetDataTableProxyFn(nullptr);
-		prop->SetDataTable(nullptr);
-		prop->SetParentArrayPropName(nullptr);
-		prop->SetArrayProp(nullptr);
-		prop->SetArrayLengthProxy(nullptr);
-		prop->SetNumElements(0);
-		prop->SetExtraData(nullptr);
-		
-		prop->m_Type = DPT_Int;
-		prop->m_nBits = 0;
-		prop->m_fLowValue = 0;
-		prop->m_fHighValue = 0;
-		prop->m_ElementStride = 0;
-		prop->m_fHighLowMul = 0;
-		
-		prop->m_pExcludeDTName = m_pExcludeDTName;
-		prop->m_pVarName = m_pVarName;
-		prop->SetFlags(SPROP_EXCLUDE);
-	}
-	
-	const char *m_pExcludeDTName = nullptr;
-	const char *m_pVarName = nullptr;
-	SendProp *prop = nullptr;
-};
-
-cell_t unexclude_sendprop(IPluginContext *pContext, const cell_t *params)
-{
 	char *tablename = nullptr;
 	pContext->LocalToString(params[2], &tablename);
 
 	char *name = nullptr;
 	pContext->LocalToString(params[3], &name);
 
-	char *classname = nullptr;
-	pContext->LocalToString(params[1], &classname);
-
 	SendTable *clstable = nullptr;
-	SendTable *table = get_send_table(classname, tablename, &clstable);
+	SendTable *table = get_send_table(factory->clsname.c_str(), tablename, &clstable);
 	if(!table) {
-		return pContext->ThrowNativeError("invalid classname or table %s, %s", classname, tablename);
+		return pContext->ThrowNativeError("invalid table %s", tablename);
 	}
 
 	SendProp *prop = UTIL_FindInSendTable(table, name, false, false);
@@ -1311,93 +1322,67 @@ cell_t unexclude_sendprop(IPluginContext *pContext, const cell_t *params)
 		return 0;
 	}
 
-	const char *m_pExcludeDTName = prop->m_pExcludeDTName;
-	const char *m_pVarName = prop->m_pVarName;
-
-	SendTable *base = UTIL_FindSendtableInSendTable(clstable, m_pExcludeDTName);
+	SendProp *realprop = nullptr;
+	SendTable *base = UTIL_FindSendtableInSendTable(clstable, prop->m_pExcludeDTName);
 	if(base) {
-		SendProp *realprop = UTIL_FindInSendTable(base, name, true, true);
-		if(realprop) {
-			assign_prop(prop, realprop);
-		} else {
-			return pContext->ThrowNativeError("%s not found in %s\n", name, base->GetName());
-		}
-	} else {
-		return pContext->ThrowNativeError("%s not found in %s\n", m_pExcludeDTName, clstable->GetName());
+		realprop = UTIL_FindInSendTable(base, name, true, true);
 	}
 	
-	int flags = prop->GetFlags();
-	flags &= ~SPROP_EXCLUDE;
-	prop->SetFlags(flags);
-	
-	prop->m_pExcludeDTName = nullptr;
-
-	unexclude_prop_t *obj = new unexclude_prop_t(prop, m_pExcludeDTName, m_pVarName);
-	return handlesys->CreateHandle(unexclude_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
+	factory->unexclude_prop(prop, realprop);
+	return 0;
 }
 
-struct addbaseclass_t
+cell_t CustomSendtableset_base_class(IPluginContext *pContext, const cell_t *params)
 {
-	addbaseclass_t(SendTable *table1, SendTable *table2)
-		: table{table1}
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	serverclass_override_t *factory = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
+	if(err != HandleError_None)
 	{
-		m_pProps = table1->m_pProps;
-		++table1->m_nProps;
-		
-		table1->m_pProps = new SendProp[table1->m_nProps];
-		
-		for(int i = 1; i < table1->m_nProps; ++i) {
-			SendProp *prop = &table1->m_pProps[i];
-			SendProp *realprop = &m_pProps[i-1];
-			assign_prop(prop, realprop);
-		}
-		
-		SendProp *prop = &table1->m_pProps[0];
-		prop->m_Type = DPT_DataTable;
-		prop->m_pVarName = "baseclass";
-		prop->SetOffset(0);
-		prop->SetDataTable(table2);
-		prop->SetDataTableProxyFn(SendProxy_DataTableToDataTable);
-		prop->SetFlags(SPROP_PROXY_ALWAYS_YES|SPROP_COLLAPSIBLE);
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
 	}
 	
-	~addbaseclass_t()
-	{
-		--table->m_nProps;
-		delete[] table->m_pProps;
-		table->m_pProps = m_pProps;
+	if(factory->base_class_set) {
+		return pContext->ThrowNativeError("base class was already set");
 	}
 	
-	SendProp *m_pProps = nullptr;
-	SendTable *table = nullptr;
-};
-
-cell_t sendtable_addbaseclass(IPluginContext *pContext, const cell_t *params)
-{
-	char *classname = nullptr;
-	pContext->LocalToString(params[1], &classname);
+	char *netname = nullptr;
+	pContext->LocalToString(params[2], &netname);
 	
-	char *tablename = nullptr;
-	pContext->LocalToString(params[2], &tablename);
-
-	SendTable *table1 = get_send_table(classname, tablename, nullptr);
-	if(!table1) {
-		return pContext->ThrowNativeError("invalid classname or table %s, %s", classname, tablename);
+	ServerClass *svcls = gamehelpers->FindServerClass(netname);
+	if(!svcls) {
+		return pContext->ThrowNativeError("invalid netname %s", netname);
 	}
 
-	pContext->LocalToString(params[3], &classname);
-	pContext->LocalToString(params[4], &tablename);
-
-	SendTable *table2 = get_send_table(classname, tablename, nullptr);
-	if(!table2) {
-		return pContext->ThrowNativeError("invalid classname or table %s, %s", classname, tablename);
-	}
-
-	addbaseclass_t *obj = new addbaseclass_t(table1, table2);
-	return handlesys->CreateHandle(addbase_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
+	factory->set_base_class(svcls->m_pTable);
+	return 0;
 }
 
-cell_t override_serverclass_name(IPluginContext *pContext, const cell_t *params)
+cell_t CustomSendtableoverride_with(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	serverclass_override_t *factory = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	char *netname = nullptr;
+	pContext->LocalToString(params[2], &netname);
+	
+	ServerClass *netclass = gamehelpers->FindServerClass(netname);
+	if(!netclass) {
+		return pContext->ThrowNativeError("invalid netname %s", netname);
+	}
+	
+	factory->override_with(netclass);
+	return 0;
+}
+
+cell_t CustomSendtablefrom_classname(IPluginContext *pContext, const cell_t *params)
 {
 	char *classname = nullptr;
 	pContext->LocalToString(params[1], &classname);
@@ -1408,26 +1393,18 @@ cell_t override_serverclass_name(IPluginContext *pContext, const cell_t *params)
 	}
 	
 	if(server_map.find(classname) != server_map.end()) {
-		return pContext->ThrowNativeError("%s already has serverclass overriden", classname);
+		return pContext->ThrowNativeError("%s already has custom sendtable", classname);
 	}
 	
-	char *netname1 = nullptr;
-	pContext->LocalToString(params[2], &netname1);
+	char *netname = nullptr;
+	pContext->LocalToString(params[2], &netname);
 	
-	ServerClass *netclass1 = gamehelpers->FindServerClass(netname1);
-	if(!netclass1) {
-		return pContext->ThrowNativeError("invalid netname %s", netname1);
+	ServerClass *netclass = gamehelpers->FindServerClass(netname);
+	if(!netclass) {
+		return pContext->ThrowNativeError("invalid netname %s", netname);
 	}
 	
-	char *netname2 = nullptr;
-	pContext->LocalToString(params[3], &netname2);
-	
-	ServerClass *netclass2 = gamehelpers->FindServerClass(netname2);
-	if(!netclass2) {
-		return pContext->ThrowNativeError("invalid netname %s", netname2);
-	}
-	
-	serverclass_override_t *obj = new serverclass_override_t{factory, classname, netclass1, netclass2};
+	serverclass_override_t *obj = new serverclass_override_t{factory, classname, netclass};
 	Handle_t hndl = handlesys->CreateHandle(serverclass_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;
 	obj->pContext = pContext;
@@ -1435,7 +1412,7 @@ cell_t override_serverclass_name(IPluginContext *pContext, const cell_t *params)
 	return hndl;
 }
 
-cell_t override_serverclass_factory(IPluginContext *pContext, const cell_t *params)
+cell_t CustomSendtablefrom_factory(IPluginContext *pContext, const cell_t *params)
 {
 	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
 	
@@ -1449,26 +1426,18 @@ cell_t override_serverclass_factory(IPluginContext *pContext, const cell_t *para
 	std::string name{factory->name};
 	
 	if(server_map.find(name) != server_map.end()) {
-		return pContext->ThrowNativeError("%s already has serverclass overriden", name.c_str());
+		return pContext->ThrowNativeError("%s already has custom sendtable", name.c_str());
 	}
 	
-	char *netname1 = nullptr;
-	pContext->LocalToString(params[2], &netname1);
+	char *netname = nullptr;
+	pContext->LocalToString(params[2], &netname);
 	
-	ServerClass *netclass1 = gamehelpers->FindServerClass(netname1);
-	if(!netclass1) {
-		return pContext->ThrowNativeError("invalid netname %s", netname1);
+	ServerClass *netclass = gamehelpers->FindServerClass(netname);
+	if(!netclass) {
+		return pContext->ThrowNativeError("invalid netname %s", netname);
 	}
 	
-	char *netname2 = nullptr;
-	pContext->LocalToString(params[3], &netname2);
-	
-	ServerClass *netclass2 = gamehelpers->FindServerClass(netname2);
-	if(!netclass2) {
-		return pContext->ThrowNativeError("invalid netname %s", netname2);
-	}
-	
-	serverclass_override_t *obj = new serverclass_override_t{factory, std::move(name), netclass1, netclass2};
+	serverclass_override_t *obj = new serverclass_override_t{factory, std::move(name), netclass};
 	Handle_t hndl = handlesys->CreateHandle(serverclass_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;
 	obj->pContext = pContext;
@@ -1476,23 +1445,44 @@ cell_t override_serverclass_factory(IPluginContext *pContext, const cell_t *para
 	return hndl;
 }
 
+cell_t CustomEntityFactoryInterfaceget(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	sp_entity_factory *factory = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	return (cell_t)(IEntityFactory *)factory;
+}
+
+cell_t EntityFactoryDictionaryfind(IPluginContext *pContext, const cell_t *params)
+{
+	char *classname = nullptr;
+	pContext->LocalToString(params[1], &classname);
+	
+	return (cell_t)dictionary->FindFactory(classname);
+}	
+
 sp_nativeinfo_t natives[] =
 {
-	{"entity_factory_exists", entity_factory_exists},
-	{"entity_factory_is_custom", entity_factory_is_custom},
-	{"register_entity_factory", register_entity_factory},
-	{"register_entity_factory_ex", register_entity_factory_ex},
-	{"remove_entity_factory", remove_entity_factory},
-	{"get_entity_factory_size", get_entity_factory_size},
-	{"CustomDatamap.from_classname", from_classname},
-	{"CustomDatamap.from_factory", from_factory},
-	{"CustomDatamap.has_prop", has_prop},
-	{"CustomDatamap.remove_prop", remove_prop},
-	{"CustomDatamap.add_prop", add_prop},
-	{"unexclude_sendprop", unexclude_sendprop},
-	{"sendtable_addbaseclass", sendtable_addbaseclass},
-	{"override_serverclass_name", override_serverclass_name},
-	{"override_serverclass_factory", override_serverclass_factory},
+	{"IEntityFactory.Custom.get", IEntityFactoryCustomget},
+	{"IEntityFactory.Size.get", IEntityFactorySizeget},
+	{"CustomEntityFactory.Interface.get", CustomEntityFactoryInterfaceget},
+	{"EntityFactoryDictionary.find", EntityFactoryDictionaryfind},
+	{"EntityFactoryDictionary.register_based", EntityFactoryDictionaryregister_based},
+	{"EntityFactoryDictionary.register_function", EntityFactoryDictionaryregister_function},
+	{"EntityFactoryDictionary.remove", EntityFactoryDictionaryremove},
+	{"CustomSendtable.from_factory", CustomSendtablefrom_factory},
+	{"CustomSendtable.override_with", CustomSendtableoverride_with},
+	{"CustomSendtable.unexclude_prop", CustomSendtableunexclude_prop},
+	{"CustomSendtable.set_base_class", CustomSendtableset_base_class},
+	{"CustomDatamap.from_classname", CustomDatamapfrom_classname},
+	{"CustomDatamap.from_factory", CustomDatamapfrom_factory},
+	{"CustomDatamap.add_prop", CustomDatamapadd_prop},
 	{NULL, NULL}
 };
 
@@ -1518,12 +1508,6 @@ void Sample::OnHandleDestroy(HandleType_t type, void *object)
 		delete obj;
 	} else if(type == removal_handle) {
 		factory_removal_t *obj = (factory_removal_t *)object;
-		delete obj;
-	} else if(type == unexclude_handle) {
-		unexclude_prop_t *obj = (unexclude_prop_t *)object;
-		delete obj;
-	} else if(type == addbase_handle) {
-		addbaseclass_t *obj = (addbaseclass_t *)object;
 		delete obj;
 	} else if(type == serverclass_handle) {
 		serverclass_override_t *obj = (serverclass_override_t *)object;
@@ -1565,8 +1549,6 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	factory_handle = handlesys->CreateType("entity_factory", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
 	datamap_handle = handlesys->CreateType("datamap", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
 	removal_handle = handlesys->CreateType("factory_removal", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
-	unexclude_handle = handlesys->CreateType("unexclude_prop", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
-	addbase_handle = handlesys->CreateType("add_baseclass", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
 	serverclass_handle = handlesys->CreateType("serverclass_override", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
 	
 	sharesys->AddDependency(myself, "sdkhooks.ext", true, true);
@@ -1617,7 +1599,5 @@ void Sample::SDK_OnUnload()
 	handlesys->RemoveType(factory_handle, myself->GetIdentity());
 	handlesys->RemoveType(datamap_handle, myself->GetIdentity());
 	handlesys->RemoveType(removal_handle, myself->GetIdentity());
-	handlesys->RemoveType(unexclude_handle, myself->GetIdentity());
-	handlesys->RemoveType(addbase_handle, myself->GetIdentity());
 	handlesys->RemoveType(serverclass_handle, myself->GetIdentity());
 }

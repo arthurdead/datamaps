@@ -5,20 +5,58 @@
 
 typeset datamaps_functions
 {
-	//register_entity_factory_ex
+	//EntityFactoryDictionary.register_function
 	function Address (int size_modifier);
 };
 
-native bool entity_factory_exists(const char[] classname);
-native bool entity_factory_is_custom(const char[] classname);
-native int get_entity_factory_size(const char[] classname);
-native Handle register_entity_factory(const char[] classname, const char[] based);
-native Handle register_entity_factory_ex(const char[] classname, datamaps_functions func, int size);
-native Handle remove_entity_factory(const char[] classname);
-native Handle unexclude_sendprop(const char[] netname, const char[] dtname, const char[] name);
-native Handle sendtable_addbaseclass(const char[] netname1, const char[] dtname1, const char[] netname2, const char[] dtname2);
-native Handle override_serverclass_name(const char[] classname, const char[] netname);
-native Handle override_serverclass_factory(Handle factory, const char[] netname);
+methodmap IEntityFactory
+{
+	property bool Custom
+	{
+		public native get();
+	}
+
+	property int Size
+	{
+		public native get();
+	}
+};
+
+#define IEntityFactory_Null (view_as<IEntityFactory>(Address_Null))
+
+methodmap CustomEntityFactory < Handle
+{
+	property IEntityFactory Interface
+	{
+		public native get();
+	}
+};
+
+methodmap EntityFactoryDictionary
+{
+	public static native IEntityFactory find(const char[] classname);
+
+	public static native CustomEntityFactory register_based(const char[] classname, IEntityFactory based);
+	public static native CustomEntityFactory register_function(const char[] classname, datamaps_functions func, int size);
+
+	public static native Handle remove(const char[] classname);
+};
+
+#define HIGH_DEFAULT -121121.121121
+
+#define SPROP_NOSCALE (1 << 2)
+
+methodmap CustomSendtable < Handle
+{
+	public static native CustomSendtable from_classname(const char[] classname, const char[] netname);
+	public static native CustomSendtable from_factory(CustomEntityFactory fac, const char[] netname);
+
+	public native void override_with(const char[] netname);
+	public native void unexclude_prop(const char[] dtname, const char[] name);
+	public native void set_base_class(const char[] netname);
+
+	public native void SendPropFloat(const char[] name, int nBits = 32, int flags = 0, float fLowValue = 0.0, float fHighValue = HIGH_DEFAULT);
+};
 
 enum custom_prop_type
 {
@@ -32,52 +70,10 @@ enum custom_prop_type
 methodmap CustomDatamap < Handle
 {
 	public static native CustomDatamap from_classname(const char[] classname);
-	public static native CustomDatamap from_factory(Handle factory);
+	public static native CustomDatamap from_factory(CustomEntityFactory fac);
 
-	public native bool has_prop(const char[] name);
-	public native void remove_prop(const char[] name);
 	public native void add_prop(const char[] name, custom_prop_type type);
 };
-
-stock void SetEntCustomProp(int entity, const char[] name, any value)
-{
-	SetEntProp(entity, Prop_Data, name, value);
-}
-
-stock void SetEntCustomPropFloat(int entity, const char[] name, float value)
-{
-	SetEntPropFloat(entity, Prop_Data, name, value);
-}
-
-stock void SetEntCustomPropEnt(int entity, const char[] name, int value)
-{
-	SetEntPropEnt(entity, Prop_Data, name, value);
-}
-
-stock void SetEntCustomPropVector(int entity, const char[] name, float value[3])
-{
-	SetEntPropVector(entity, Prop_Data, name, value);
-}
-
-stock any GetEntCustomProp(int entity, const char[] name)
-{
-	return GetEntProp(entity, Prop_Data, name);
-}
-
-stock float GetEntCustomPropFloat(int entity, const char[] name)
-{
-	return GetEntPropFloat(entity, Prop_Data, name);
-}
-
-stock int GetEntCustomPropEnt(int entity, const char[] name)
-{
-	return GetEntPropEnt(entity, Prop_Data, name);
-}
-
-stock void GetEntCustomPropVector(int entity, const char[] name, float value[3])
-{
-	GetEntPropVector(entity, Prop_Data, name, value);
-}
 
 #if !defined REQUIRE_EXTENSIONS
 public void __ext_datamaps_SetNTVOptional()
