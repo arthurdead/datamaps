@@ -6,15 +6,19 @@
 typeset datamaps_functions
 {
 	//register_entity_factory_ex
-	function Address ();
+	function Address (int size_modifier);
 };
 
 native bool entity_factory_exists(const char[] classname);
 native bool entity_factory_is_custom(const char[] classname);
 native int get_entity_factory_size(const char[] classname);
-native Handle register_entity_factory(const char[] classname, const char[] based, bool remove_entities = true);
-native Handle register_entity_factory_ex(const char[] classname, datamaps_functions func, int size = -1, bool remove_entities = true);
-native Handle remove_entity_factory(const char[] classname, bool remove_entities = true);
+native Handle register_entity_factory(const char[] classname, const char[] based);
+native Handle register_entity_factory_ex(const char[] classname, datamaps_functions func, int size);
+native Handle remove_entity_factory(const char[] classname);
+native Handle unexclude_sendprop(const char[] netname, const char[] dtname, const char[] name);
+native Handle sendtable_addbaseclass(const char[] netname1, const char[] dtname1, const char[] netname2, const char[] dtname2);
+native Handle override_serverclass_name(const char[] classname, const char[] netname);
+native Handle override_serverclass_factory(Handle factory, const char[] netname);
 
 enum custom_prop_type
 {
@@ -27,8 +31,8 @@ enum custom_prop_type
 
 methodmap CustomDatamap < Handle
 {
-	public static native CustomDatamap from_classname(const char[] classname, bool remove_entities = true);
-	public static native CustomDatamap from_factory(Handle factory, bool remove_entities = true);
+	public static native CustomDatamap from_classname(const char[] classname);
+	public static native CustomDatamap from_factory(Handle factory);
 
 	public native bool has_prop(const char[] name);
 	public native void remove_prop(const char[] name);

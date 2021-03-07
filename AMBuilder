@@ -6,7 +6,7 @@ projectName = 'datamaps'
 # smsdk_ext.cpp will be automatically added later
 sourceFiles = [
   'extension.cpp',
-  'sm_datamapcachehack.cpp',
+  'sm_cachehack.cpp',
 ]
 
 ###############
@@ -31,6 +31,7 @@ for sdk_name in Extension.sdks:
 
   project.sources += [os.path.join(sdk.path, 'public/dt_send.cpp')]
 
+  project.compiler.cxxincludes += [sdk.path]
   project.compiler.cxxincludes += [os.path.join(sdk.path, 'game')]
   project.compiler.cxxincludes += [os.path.join(sdk.path, 'game/server')]
   project.compiler.cxxincludes += [os.path.join(sdk.path, 'game/shared')]

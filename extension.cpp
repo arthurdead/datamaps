@@ -50,6 +50,10 @@
 #include <dt_common.h>
 #include <shareddefs.h>
 #include <util.h>
+#include <eiface.h>
+#include <tier1/checksum_md5.h>
+#include <iserver.h>
+#include "protocol.h"
 #include <tier1/utldict.h>
 
 using vec3_t = vec_t[3];
@@ -128,19 +132,48 @@ CGlobalVars *gpGlobals = nullptr;
 CBaseEntityList *g_pEntityList = nullptr;
 ISDKHooks *g_pSDKHooks = nullptr;
 IServerTools *servertools = nullptr;
+ServerClass *g_pServerClassHead = nullptr;
+ServerClass *g_pServerClassTail = nullptr;
+INetworkStringTableContainer *netstringtables = NULL;
+INetworkStringTable *m_pInstanceBaselineTable = nullptr;
+IServer *server = nullptr;
+//IServerGameDLL *gamedll = nullptr;
 
 HandleType_t factory_handle = 0;
 HandleType_t datamap_handle = 0;
 HandleType_t removal_handle = 0;
 HandleType_t unexclude_handle = 0;
 HandleType_t addbase_handle = 0;
+HandleType_t serverclass_handle = 0;
 
-template <typename T>
-T void_to_func(void *ptr)
+template <typename R, typename T, typename ...Args>
+R call_vfunc(T *pThisPtr, size_t offset, Args ...args)
 {
-	union { T f; void *p; };
-	p = ptr;
-	return f;
+	class VEmptyClass {};
+	
+	void **this_ptr = *reinterpret_cast<void ***>(&pThisPtr);
+	void **vtable = *reinterpret_cast<void ***>(pThisPtr);
+	void *vfunc = vtable[offset];
+	
+	union
+	{
+		R (VEmptyClass::*mfpnew)(Args...);
+#ifndef PLATFORM_POSIX
+		void *addr;
+	} u;
+	u.addr = vfunc;
+#else
+		struct  
+		{
+			void *addr;
+			intptr_t adjustor;
+		} s;
+	} u;
+	u.s.addr = vfunc;
+	u.s.adjustor = 0;
+#endif
+	
+	return (R)(reinterpret_cast<VEmptyClass *>(this_ptr)->*u.mfpnew)(args...);
 }
 
 class CBaseEntity : public IServerEntity
@@ -152,8 +185,7 @@ public:
 	
 	void PostConstructor(const char *classname)
 	{
-		void **vtable = *(void ***)this;
-		(this->*void_to_func<void (CBaseEntity::*)(const char *classname)>(vtable[CBaseEntityPostConstructor]))(classname);
+		call_vfunc<void, CBaseEntity, const char *>(this, CBaseEntityPostConstructor, classname);
 	}
 };
 
@@ -169,7 +201,7 @@ template <typename T>
 void loop_all_entities(T func, const std::string &name)
 {
 	CBaseEntity *pEntity = nullptr;
-	while(pEntity = servertools->FindEntityByClassname(pEntity, name.c_str())) {
+	while((pEntity = servertools->FindEntityByClassname(pEntity, name.c_str())) != nullptr) {
 		func(pEntity);
 	}
 }
@@ -200,16 +232,16 @@ public:
 		return nullptr;
 	}
 	
-	void remove_factory(IEntityFactory *fac, const std::string &name, bool remove_entities = true);
+	void remove_factory(IEntityFactory *fac, const std::string &name);
 	
-	void remove_factory(const std::string &name, bool remove_entities = true)
+	void remove_factory(const std::string &name)
 	{
-		remove_factory(get_name_factory(name), name, remove_entities);
+		remove_factory(get_name_factory(name), name);
 	}
 	
-	void remove_factory(IEntityFactory *fac, bool remove_entities = true)
+	void remove_factory(IEntityFactory *fac)
 	{
-		remove_factory(fac, get_factory_name(fac), remove_entities);
+		remove_factory(fac, get_factory_name(fac));
 	}
 	
 	static bool is_factory_custom(IEntityFactory *fac)
@@ -219,101 +251,6 @@ public:
 };
 
 CEntityFactoryDictionary *dictionary = nullptr;
-
-class sp_entity_factory : public IEntityFactory
-{
-	sp_entity_factory(std::string &&name_, bool remove_entities_);
-public:
-	sp_entity_factory(std::string &&name_, IPluginFunction *func_, size_t size_, bool remove_entities_)
-	: sp_entity_factory(std::move(name_), remove_entities_)
-	{
-		func = func_;
-		size = size_;
-	}
-	sp_entity_factory(std::string &&name_, IEntityFactory *based_, bool remove_entities_)
-		: sp_entity_factory(std::move(name_), remove_entities_)
-	{
-		based = based_;
-		size = based->GetEntitySize();
-	}
-	~sp_entity_factory();
-	IServerNetworkable *Create(const char *pClassName)
-	{
-		IServerNetworkable *net = nullptr;
-		
-		if(based != nullptr) {
-			net = based->Create(pClassName);
-		} else if(func != nullptr) {
-			cell_t res = 0;
-			func->Execute(&res);
-			CBaseEntity *obj = (CBaseEntity *)res;
-			if(obj != nullptr) {
-				obj->PostConstructor(pClassName);
-				net = obj->GetNetworkable();
-			}
-		}
-		
-		return net;
-	}
-	void Destroy(IServerNetworkable *pNetworkable) {}
-	size_t GetEntitySize() { return (size_t)-1; }
-	
-	std::string name;
-	IEntityFactory *based = nullptr;
-	IPluginFunction *func = nullptr;
-	bool remove_entities = true;
-	size_t size = (size_t)-1;
-	
-	Handle_t hndl = BAD_HANDLE;
-	IPluginContext *pContext = nullptr;
-	bool freehndl = true;
-	bool dont_delete = false;
-};
-
-struct factory_removal_t
-{
-	factory_removal_t(std::string &&name_, IEntityFactory *fac_, bool remove_entities)
-		: name{std::move(name_)}, based{fac_}
-	{
-		dictionary->remove_factory(based, name, remove_entities);
-	}
-	
-	~factory_removal_t()
-	{
-		dictionary->m_Factories.Remove(name.c_str());
-		dictionary->InstallFactory(based, name.c_str());
-	}
-	
-	std::string name;
-	IEntityFactory *based;
-};
-
-using factory_map_t = std::unordered_map<std::string, sp_entity_factory *>;
-factory_map_t factory_map{};
-
-sp_entity_factory::sp_entity_factory(std::string &&name_, bool remove_entities_)
-	: name(std::move(name_)), remove_entities{remove_entities_}
-{
-	factory_map[name] = this;
-
-	dictionary->InstallFactory(this, name.c_str());
-}
-
-sp_entity_factory::~sp_entity_factory()
-{
-	dont_delete = true;
-	
-	dictionary->remove_factory(this, name.c_str(), remove_entities);
-	
-	factory_map.erase(name);
-	
-	if(freehndl) {
-		if(hndl != BAD_HANDLE) {
-			HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
-			handlesys->FreeHandle(hndl, &security);
-		}
-	}
-}
 
 enum custom_prop_type
 {
@@ -348,6 +285,7 @@ struct custom_typedescription_t : typedescription_t
 		if(fieldName != nullptr) {
 			free((void *)fieldName);
 		}
+		fieldName = nullptr;
 	}
 	
 	~custom_typedescription_t()
@@ -371,6 +309,7 @@ struct custom_datamap_t : datamap_t
 		if(dataClassName != nullptr) {
 			free((void *)dataClassName);
 		}
+		dataClassName = nullptr;
 	}
 	
 	~custom_datamap_t()
@@ -399,7 +338,6 @@ struct custom_prop_info_t
 	std::string clsname{};
 	Handle_t hndl = BAD_HANDLE;
 	IPluginContext *pContext = nullptr;
-	bool remove_entities = true;
 	bool erase = true;
 	bool freehndl = true;
 	
@@ -534,25 +472,192 @@ struct custom_prop_info_t
 		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
 	}
 	
+	void do_override(CBaseEntity *pEntity);
+	
 	IServerNetworkable *HookCreate(const char *classname);
 };
+
+SH_DECL_HOOK0(CBaseEntity, GetServerClass, SH_NOATTRIB, 0, ServerClass *);
+
+class custom_ServerClass
+{
+public:
+	void set_name(const std::string &name)
+	{
+		size_t len = name.length();
+		m_pNetworkName = (char *)malloc(len+1);
+		strncpy((char *)m_pNetworkName, name.c_str(), len);
+		((char *)m_pNetworkName)[len] = '\0';
+	}
+	
+	void clear_name()
+	{
+		if(m_pNetworkName != nullptr) {
+			free((void *)m_pNetworkName);
+		}
+		m_pNetworkName = nullptr;
+	}
+	
+	~custom_ServerClass()
+	{
+		//clear_name();
+	}
+	
+	const char					*m_pNetworkName;
+	SendTable					*m_pTable;
+	ServerClass					*m_pNext;
+	int							m_ClassID;	// Managed by the engine.
+
+	// This is an index into the network string table (sv.GetInstanceBaselineTable()).
+	int							m_InstanceBaselineIndex; // INVALID_STRING_INDEX if not initialized yet.
+};
+
+struct serverclass_override_t
+{
+	serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_, ServerClass *fakecls_);
+	~serverclass_override_t();
+	
+	IServerNetworkable *HookCreate(const char *classname);
+	
+	ServerClass *HookGetServerClass()
+	{
+		RETURN_META_VALUE(MRES_SUPERCEDE, (ServerClass *)&cls);
+	}
+	
+	void HookEntityDtor()
+	{
+		CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
+		SH_REMOVE_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
+		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
+	}
+	
+	void do_override(CBaseEntity *pEntity);
+	
+	IEntityFactory *fac = nullptr;
+	bool fac_is_sp = false;
+	custom_ServerClass cls{};
+	ServerClass *realcls = nullptr;
+	ServerClass *fakecls = nullptr;
+	std::string clsname{};
+	Handle_t hndl = BAD_HANDLE;
+	IPluginContext *pContext = nullptr;
+	bool erase = true;
+	bool freehndl = true;
+	bool was_overriden = false;
+};
+
+class sp_entity_factory : public IEntityFactory
+{
+	sp_entity_factory(std::string &&name_);
+public:
+	sp_entity_factory(std::string &&name_, IPluginFunction *func_, size_t size_)
+	: sp_entity_factory(std::move(name_))
+	{
+		func = func_;
+		size = size_;
+	}
+	sp_entity_factory(std::string &&name_, IEntityFactory *based_)
+		: sp_entity_factory(std::move(name_))
+	{
+		based = based_;
+		size = based->GetEntitySize();
+	}
+	~sp_entity_factory();
+	IServerNetworkable *Create(const char *pClassName);
+	void Destroy(IServerNetworkable *pNetworkable) {
+		if(based) {
+			based->Destroy(pNetworkable);
+		} else {
+			if(pNetworkable) {
+				pNetworkable->Release();
+			}
+		}
+	}
+	size_t GetEntitySize() { return (size_t)-1; }
+	
+	std::string name{};
+	IEntityFactory *based = nullptr;
+	IPluginFunction *func = nullptr;
+	size_t size = (size_t)-1;
+	
+	custom_prop_info_t *custom_prop = nullptr;
+	serverclass_override_t *custom_server = nullptr;
+	
+	Handle_t hndl = BAD_HANDLE;
+	IPluginContext *pContext = nullptr;
+	bool freehndl = true;
+	bool dont_delete = false;
+};
+
+struct factory_removal_t
+{
+	factory_removal_t(std::string &&name_, IEntityFactory *fac_)
+		: name{std::move(name_)}, based{fac_}
+	{
+		dictionary->remove_factory(based, name);
+	}
+	
+	~factory_removal_t()
+	{
+		dictionary->m_Factories.Remove(name.c_str());
+		dictionary->InstallFactory(based, name.c_str());
+	}
+	
+	std::string name{};
+	IEntityFactory *based = nullptr;
+};
+
+using factory_map_t = std::unordered_map<std::string, sp_entity_factory *>;
+factory_map_t factory_map{};
+
+sp_entity_factory::sp_entity_factory(std::string &&name_)
+	: name(std::move(name_))
+{
+	factory_map[name] = this;
+
+	dictionary->InstallFactory(this, name.c_str());
+}
+
+sp_entity_factory::~sp_entity_factory()
+{
+	dont_delete = true;
+	
+	dictionary->remove_factory(this, name.c_str());
+	
+	factory_map.erase(name);
+	
+	if(freehndl) {
+		if(hndl != BAD_HANDLE) {
+			HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+			handlesys->FreeHandle(hndl, &security);
+		}
+	}
+}
 
 custom_prop_info_t *currinfo = nullptr;
 
 using info_map_t = std::unordered_map<std::string, custom_prop_info_t *>;
 info_map_t info_map{};
 
-void CEntityFactoryDictionary::remove_factory(IEntityFactory *fac, const std::string &name, bool remove_entities)
+using server_map_t = std::unordered_map<std::string, serverclass_override_t *>;
+server_map_t server_map{};
+
+void CEntityFactoryDictionary::remove_factory(IEntityFactory *fac, const std::string &name)
 {
-	info_map_t::iterator it{info_map.find(name)};
-	if(it != info_map.end()) {
-		custom_prop_info_t *prop{it->second};
+	info_map_t::iterator info_it{info_map.find(name)};
+	if(info_it != info_map.end()) {
+		custom_prop_info_t *prop{info_it->second};
 		prop->erase = false;
-		if(remove_entities) {
-			prop->remove_entities = false;
-		}
 		delete prop;
-		info_map.erase(it);
+		info_map.erase(info_it);
+	}
+	
+	server_map_t::iterator server_it{server_map.find(name)};
+	if(server_it != server_map.end()) {
+		serverclass_override_t *prop{server_it->second};
+		prop->erase = false;
+		delete prop;
+		server_map.erase(server_it);
 	}
 	
 	m_Factories.Remove(name.c_str());
@@ -563,9 +668,127 @@ void CEntityFactoryDictionary::remove_factory(IEntityFactory *fac, const std::st
 			delete sp_fac;
 		}
 	}
+}
+
+ServerClass *custom_server_head = nullptr;
+
+class CNetworkStringTableContainer;
+enum server_state_t : int;
+
+class CBaseServer : public IServer
+{
+public:
+	server_state_t	m_State;		// some actions are only valid during load
+	int				m_Socket;		// network socket 
+	int				m_nTickCount;	// current server tick
+	bool			m_bSimulatingTicks;		// whether or not the server is currently simulating ticks
+	char			m_szMapname[64];		// map name
+	char			m_szMapFilename[64];	// map filename, may bear no resemblance to map name
+	char			m_szSkyname[64];		// skybox name
+	char			m_Password[32];		// server password
+
+	MD5Value_t		worldmapMD5;		// For detecting that client has a hacked local copy of map, the client will be dropped if this occurs.
 	
-	if(remove_entities) {
-		remove_all_entities(name);
+	CNetworkStringTableContainer *m_StringTables;	// newtork string table container
+
+	INetworkStringTable *m_pInstanceBaselineTable; 
+	INetworkStringTable *m_pLightStyleTable;
+	INetworkStringTable *m_pUserInfoTable;
+	INetworkStringTable *m_pServerStartupTable;
+	INetworkStringTable *m_pDownloadableFileTable;
+
+	// This will get set to NET_MAX_PAYLOAD if the server is MP.
+	bf_write			m_Signon;
+	CUtlMemory<byte>	m_SignonBuffer;
+
+	int			serverclasses;		// number of unique server classes
+	int			serverclassbits;	// log2 of serverclasses
+	
+	void increment_svclasses()
+	{
+		++serverclasses;
+		serverclassbits = Q_log2( serverclasses ) + 1;
+	}
+	
+	void decrement_svclasses()
+	{
+		--serverclasses;
+		serverclassbits = Q_log2( serverclasses ) + 1;
+	}
+};
+
+serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_, ServerClass *fakecls_)
+	: fac{fac_}, clsname{std::move(clsname_)}, realcls{realcls_}, fakecls{fakecls_}
+{
+	if(CEntityFactoryDictionary::is_factory_custom(fac)) {
+		fac_is_sp = true;
+		sp_entity_factory *spfac = (sp_entity_factory *)fac;
+		spfac->custom_server = this;
+	} else {
+		SH_ADD_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &serverclass_override_t::HookCreate), false);
+	}
+	
+	server_map[clsname] = this;
+	
+	cls.m_pTable = realcls->m_pTable;
+	
+	if(!custom_server_head) {
+		custom_server_head = (ServerClass *)&cls;
+		g_pServerClassTail->m_pNext = custom_server_head;
+	} else {
+		custom_server_head->m_pNext = (ServerClass *)&cls;
+		custom_server_head = custom_server_head->m_pNext;
+	}
+	
+	cls.m_ClassID = fakecls->m_ClassID;
+	cls.m_pNetworkName = fakecls->m_pNetworkName;
+	cls.m_InstanceBaselineIndex = fakecls->m_InstanceBaselineIndex;
+	
+	((CBaseServer *)server)->increment_svclasses();
+}
+
+extern void remove_serverclass_from_sm_cache(ServerClass *pMap);
+
+serverclass_override_t::~serverclass_override_t()
+{
+	if(erase) {
+		server_map.erase(clsname);
+	}
+	
+	for(ServerClass *cur = custom_server_head, *prev = nullptr; cur != nullptr; prev = cur, cur = cur->m_pNext) {
+		if (cur == (ServerClass *)this) {
+			if(prev != nullptr) {
+				prev->m_pNext = cur->m_pNext;
+			} else {
+				custom_server_head = cur->m_pNext;
+			}
+			cur->m_pNext = nullptr;
+			break;
+		}
+	}
+	
+	if(!custom_server_head) {
+		g_pServerClassTail->m_pNext = nullptr;
+	}
+	
+	((CBaseServer *)server)->decrement_svclasses();
+	
+	remove_serverclass_from_sm_cache((ServerClass *)&cls);
+	
+	if(!fac_is_sp) {
+		SH_REMOVE_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &serverclass_override_t::HookCreate), false);
+	}
+	
+	loop_all_entities([this](CBaseEntity *pEntity){
+		SH_REMOVE_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
+		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
+	}, clsname);
+	
+	if(freehndl) {
+		if(hndl != BAD_HANDLE) {
+			HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+			handlesys->FreeHandle(hndl, &security);
+		}
 	}
 }
 
@@ -576,7 +799,13 @@ custom_prop_info_t::custom_prop_info_t(IEntityFactory *fac_, std::string &&clsna
 	map.packed_offsets_computed = 0;
 	map.packed_size = 0;
 	
-	SH_ADD_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &custom_prop_info_t::HookCreate), false);
+	if(CEntityFactoryDictionary::is_factory_custom(fac)) {
+		fac_is_sp = true;
+		sp_entity_factory *spfac = (sp_entity_factory *)fac;
+		spfac->custom_prop = this;
+	} else {
+		SH_ADD_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &custom_prop_info_t::HookCreate), false);
+	}
 	
 	info_map[clsname] = this;
 }
@@ -591,16 +820,14 @@ custom_prop_info_t::~custom_prop_info_t()
 	
 	remove_datamap_from_sm_cache(&map);
 	
-	SH_REMOVE_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &custom_prop_info_t::HookCreate), false);
-	
-	if(!remove_entities) {
-		loop_all_entities([this](CBaseEntity *pEntity){
-			SH_REMOVE_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
-			SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
-		}, clsname);
-	} else {
-		remove_all_entities(clsname);
+	if(!fac_is_sp) {
+		SH_REMOVE_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &custom_prop_info_t::HookCreate), false);
 	}
+	
+	loop_all_entities([this](CBaseEntity *pEntity){
+		SH_REMOVE_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
+		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
+	}, clsname);
 	
 	for(custom_typedescription_t &desc : dataDesc) {
 		desc.clear_name();
@@ -614,20 +841,19 @@ custom_prop_info_t::~custom_prop_info_t()
 	}
 }
 
-IServerNetworkable *custom_prop_info_t::HookCreate(const char *classname)
+void serverclass_override_t::do_override(CBaseEntity *pEntity)
 {
-	IEntityFactory *fac = META_IFACEPTR(IEntityFactory);
-	
-	currinfo = this;
-	IServerNetworkable *net = SH_CALL(fac, &IEntityFactory::Create)(classname);
-	currinfo = nullptr;
-	
-	CBaseEntity *pEntity = net->GetBaseEntity();
-	
+	SH_ADD_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
+	SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
+}
+
+void custom_prop_info_t::do_override(CBaseEntity *pEntity)
+{
 	if(!was_overriden) {
 		datamap_t *basemap = gamehelpers->GetDataMap(pEntity);
+		ServerClass *svcls = pEntity->GetServerClass();
 		
-		std::string mapname{basemap->dataClassName};
+		std::string mapname{svcls->GetName()};
 		mapname += "_custom";
 		map.set_name(mapname);
 		map.baseMap = basemap;
@@ -642,6 +868,71 @@ IServerNetworkable *custom_prop_info_t::HookCreate(const char *classname)
 	
 	SH_ADD_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
 	SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
+}
+
+IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
+{
+	IServerNetworkable *net = nullptr;
+	
+	bool has_custom_prop = custom_prop != nullptr;
+	bool has_custom_server = custom_server != nullptr;
+	
+	if(based != nullptr) {
+		last_cb = based->GetEntitySize();
+		net = based->Create(pClassName);
+		CBaseEntity *pEntity = net->GetBaseEntity();
+		if(has_custom_prop) {
+			if(pEntity) {
+				custom_prop->do_override(pEntity);
+			}
+		}
+		if(has_custom_server) {
+			custom_server->do_override(pEntity);
+		}
+	} else if(func != nullptr) {
+		cell_t res = 0;
+		func->PushCell(has_custom_prop ? custom_prop->size : 0);
+		func->Execute(&res);
+		last_cb = size;
+		CBaseEntity *obj = (CBaseEntity *)res;
+		if(obj != nullptr) {
+			obj->PostConstructor(pClassName);
+			net = obj->GetNetworkable();
+			if(has_custom_prop) {
+				custom_prop->do_override(obj);
+			}
+			if(has_custom_server) {
+				custom_server->do_override(obj);
+			}
+		}
+	}
+	
+	return net;
+}
+
+IServerNetworkable *custom_prop_info_t::HookCreate(const char *classname)
+{
+	IEntityFactory *fac = META_IFACEPTR(IEntityFactory);
+	
+	currinfo = this;
+	IServerNetworkable *net = SH_CALL(fac, &IEntityFactory::Create)(classname);
+	currinfo = nullptr;
+	
+	CBaseEntity *pEntity = net->GetBaseEntity();
+	
+	do_override(pEntity);
+	
+	RETURN_META_VALUE(MRES_SUPERCEDE, net);
+}
+
+IServerNetworkable *serverclass_override_t::HookCreate(const char *classname)
+{
+	IEntityFactory *fac = META_IFACEPTR(IEntityFactory);
+	IServerNetworkable *net = SH_CALL(fac, &IEntityFactory::Create)(classname);
+	
+	CBaseEntity *pEntity = net->GetBaseEntity();
+	
+	do_override(pEntity);
 	
 	RETURN_META_VALUE(MRES_SUPERCEDE, net);
 }
@@ -705,7 +996,7 @@ cell_t remove_entity_factory(IPluginContext *pContext, const cell_t *params)
 		return pContext->ThrowNativeError("cant remove custom factories using this native");
 	}
 	
-	factory_removal_t *obj = new factory_removal_t{name, factory, params[3]};
+	factory_removal_t *obj = new factory_removal_t{name, factory};
 	return handlesys->CreateHandle(removal_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 }
 
@@ -727,7 +1018,7 @@ cell_t register_entity_factory(IPluginContext *pContext, const cell_t *params)
 		return pContext->ThrowNativeError("invalid classname %s", based);
 	}
 	
-	sp_entity_factory *obj = new sp_entity_factory(name, factory, params[3]);
+	sp_entity_factory *obj = new sp_entity_factory(name, factory);
 	
 	Handle_t hndl = handlesys->CreateHandle(factory_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;
@@ -746,9 +1037,13 @@ cell_t register_entity_factory_ex(IPluginContext *pContext, const cell_t *params
 		return pContext->ThrowNativeError("%s is already registered", name);
 	}
 	
+	if(params[3] <= 0) {
+		return pContext->ThrowNativeError("invalid size %i", params[3]);
+	}
+	
 	IPluginFunction *callback = pContext->GetFunctionById(params[2]);
 	
-	sp_entity_factory *obj = new sp_entity_factory(name, callback, params[3], params[4]);
+	sp_entity_factory *obj = new sp_entity_factory(name, callback, params[3]);
 	
 	Handle_t hndl = handlesys->CreateHandle(factory_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;
@@ -825,7 +1120,6 @@ cell_t from_classname(IPluginContext *pContext, const cell_t *params)
 	}
 	
 	custom_prop_info_t *obj = new custom_prop_info_t(factory, name);
-	obj->remove_entities = params[2];
 
 	Handle_t hndl = handlesys->CreateHandle(datamap_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;
@@ -852,7 +1146,6 @@ cell_t from_factory(IPluginContext *pContext, const cell_t *params)
 	}
 	
 	custom_prop_info_t *obj = new custom_prop_info_t(factory, std::move(name));
-	obj->remove_entities = params[2];
 
 	Handle_t hndl = handlesys->CreateHandle(datamap_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;
@@ -891,7 +1184,7 @@ SendProp *UTIL_FindInSendTable(SendTable *pTable, const char *name, bool recursi
 				}
 			}
 		}
-}
+	}
 
 	return nullptr;
 }
@@ -1017,16 +1310,9 @@ cell_t unexclude_sendprop(IPluginContext *pContext, const cell_t *params)
 	if(!prop->IsExcludeProp()) {
 		return 0;
 	}
-	
-	int flags = prop->GetFlags();
-	flags &= ~SPROP_EXCLUDE;
-	prop->SetFlags(flags);
 
 	const char *m_pExcludeDTName = prop->m_pExcludeDTName;
 	const char *m_pVarName = prop->m_pVarName;
-	
-	prop->m_pExcludeDTName = nullptr;
-	prop->m_pVarName = nullptr;
 
 	SendTable *base = UTIL_FindSendtableInSendTable(clstable, m_pExcludeDTName);
 	if(base) {
@@ -1034,11 +1320,17 @@ cell_t unexclude_sendprop(IPluginContext *pContext, const cell_t *params)
 		if(realprop) {
 			assign_prop(prop, realprop);
 		} else {
-			printf("%s not found in %s\n", name, base->GetName());
+			return pContext->ThrowNativeError("%s not found in %s\n", name, base->GetName());
 		}
 	} else {
-		printf("%s not found in %s\n", m_pExcludeDTName, clstable->GetName());
+		return pContext->ThrowNativeError("%s not found in %s\n", m_pExcludeDTName, clstable->GetName());
 	}
+	
+	int flags = prop->GetFlags();
+	flags &= ~SPROP_EXCLUDE;
+	prop->SetFlags(flags);
+	
+	prop->m_pExcludeDTName = nullptr;
 
 	unexclude_prop_t *obj = new unexclude_prop_t(prop, m_pExcludeDTName, m_pVarName);
 	return handlesys->CreateHandle(unexclude_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
@@ -1105,6 +1397,85 @@ cell_t sendtable_addbaseclass(IPluginContext *pContext, const cell_t *params)
 	return handlesys->CreateHandle(addbase_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 }
 
+cell_t override_serverclass_name(IPluginContext *pContext, const cell_t *params)
+{
+	char *classname = nullptr;
+	pContext->LocalToString(params[1], &classname);
+	
+	IEntityFactory *factory = dictionary->FindFactory(classname);
+	if(!factory) {
+		return pContext->ThrowNativeError("invalid classname %s", classname);
+	}
+	
+	if(server_map.find(classname) != server_map.end()) {
+		return pContext->ThrowNativeError("%s already has serverclass overriden", classname);
+	}
+	
+	char *netname1 = nullptr;
+	pContext->LocalToString(params[2], &netname1);
+	
+	ServerClass *netclass1 = gamehelpers->FindServerClass(netname1);
+	if(!netclass1) {
+		return pContext->ThrowNativeError("invalid netname %s", netname1);
+	}
+	
+	char *netname2 = nullptr;
+	pContext->LocalToString(params[3], &netname2);
+	
+	ServerClass *netclass2 = gamehelpers->FindServerClass(netname2);
+	if(!netclass2) {
+		return pContext->ThrowNativeError("invalid netname %s", netname2);
+	}
+	
+	serverclass_override_t *obj = new serverclass_override_t{factory, classname, netclass1, netclass2};
+	Handle_t hndl = handlesys->CreateHandle(serverclass_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
+	obj->hndl = hndl;
+	obj->pContext = pContext;
+	
+	return hndl;
+}
+
+cell_t override_serverclass_factory(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	sp_entity_factory *factory = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], factory_handle, &security, (void **)&factory);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	std::string name{factory->name};
+	
+	if(server_map.find(name) != server_map.end()) {
+		return pContext->ThrowNativeError("%s already has serverclass overriden", name.c_str());
+	}
+	
+	char *netname1 = nullptr;
+	pContext->LocalToString(params[2], &netname1);
+	
+	ServerClass *netclass1 = gamehelpers->FindServerClass(netname1);
+	if(!netclass1) {
+		return pContext->ThrowNativeError("invalid netname %s", netname1);
+	}
+	
+	char *netname2 = nullptr;
+	pContext->LocalToString(params[3], &netname2);
+	
+	ServerClass *netclass2 = gamehelpers->FindServerClass(netname2);
+	if(!netclass2) {
+		return pContext->ThrowNativeError("invalid netname %s", netname2);
+	}
+	
+	serverclass_override_t *obj = new serverclass_override_t{factory, std::move(name), netclass1, netclass2};
+	Handle_t hndl = handlesys->CreateHandle(serverclass_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
+	obj->hndl = hndl;
+	obj->pContext = pContext;
+	
+	return hndl;
+}
+
 sp_nativeinfo_t natives[] =
 {
 	{"entity_factory_exists", entity_factory_exists},
@@ -1120,6 +1491,8 @@ sp_nativeinfo_t natives[] =
 	{"CustomDatamap.add_prop", add_prop},
 	{"unexclude_sendprop", unexclude_sendprop},
 	{"sendtable_addbaseclass", sendtable_addbaseclass},
+	{"override_serverclass_name", override_serverclass_name},
+	{"override_serverclass_factory", override_serverclass_factory},
 	{NULL, NULL}
 };
 
@@ -1152,6 +1525,10 @@ void Sample::OnHandleDestroy(HandleType_t type, void *object)
 	} else if(type == addbase_handle) {
 		addbaseclass_t *obj = (addbaseclass_t *)object;
 		delete obj;
+	} else if(type == serverclass_handle) {
+		serverclass_override_t *obj = (serverclass_override_t *)object;
+		obj->freehndl = false;
+		delete obj;
 	}
 }
 
@@ -1162,6 +1539,15 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	GET_V_IFACE_ANY(GetEngineFactory, engine, IVEngineServer, INTERFACEVERSION_VENGINESERVER)
 	dictionary = (CEntityFactoryDictionary *)servertools->GetEntityFactoryDictionary();
 	SH_ADD_HOOK(IVEngineServer, PvAllocEntPrivateData, engine, SH_STATIC(&HookPvAllocEntPrivateData), false);
+	GET_V_IFACE_ANY(GetServerFactory, gamedll, IServerGameDLL, INTERFACEVERSION_SERVERGAMEDLL)
+	GET_V_IFACE_ANY(GetEngineFactory, netstringtables, INetworkStringTableContainer, INTERFACENAME_NETWORKSTRINGTABLESERVER)
+	g_pServerClassHead = gamedll->GetAllServerClasses();
+	g_pServerClassTail = g_pServerClassHead;
+	while(g_pServerClassTail && g_pServerClassTail->m_pNext) {
+		g_pServerClassTail = g_pServerClassTail->m_pNext;
+	}
+	m_pInstanceBaselineTable = netstringtables->FindTable(INSTANCE_BASELINE_TABLENAME);
+	server = engine->GetIServer();
 	return true;
 }
 
@@ -1181,6 +1567,7 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	removal_handle = handlesys->CreateType("factory_removal", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
 	unexclude_handle = handlesys->CreateType("unexclude_prop", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
 	addbase_handle = handlesys->CreateType("add_baseclass", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
+	serverclass_handle = handlesys->CreateType("serverclass_override", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
 	
 	sharesys->AddDependency(myself, "sdkhooks.ext", true, true);
 	
@@ -1232,4 +1619,5 @@ void Sample::SDK_OnUnload()
 	handlesys->RemoveType(removal_handle, myself->GetIdentity());
 	handlesys->RemoveType(unexclude_handle, myself->GetIdentity());
 	handlesys->RemoveType(addbase_handle, myself->GetIdentity());
+	handlesys->RemoveType(serverclass_handle, myself->GetIdentity());
 }
