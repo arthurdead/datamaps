@@ -37,6 +37,16 @@ methodmap EntityFactoryDictionary
 	public static native IEntityFactory find(const char[] classname);
 
 	public static native CustomEntityFactory register_based(const char[] classname, IEntityFactory based);
+	public static CustomEntityFactory register_based_name(const char[] classname, const char[] based)
+	{
+		IEntityFactory factory = EntityFactoryDictionary.find(based);
+		if(factory != IEntityFactory_Null) {
+			return EntityFactoryDictionary.register_based(classname, factory);
+		} else {
+			ThrowError("invalid classname %s", based);
+			return null;
+		}
+	}
 	public static native CustomEntityFactory register_function(const char[] classname, datamaps_functions func, int size);
 
 	public static native Handle remove(const char[] classname);
