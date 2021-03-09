@@ -62,6 +62,7 @@ methodmap CustomSendtable < Handle
 	public static native CustomSendtable from_factory(CustomEntityFactory fac, const char[] netname);
 
 	public native void override_with(const char[] netname);
+	public native void override_with_ex(const char[] netname, const char[] dtname);
 	public native void unexclude_prop(const char[] dtname, const char[] name);
 	public native void set_base_class(const char[] netname);
 

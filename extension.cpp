@@ -272,6 +272,8 @@ struct custom_typedescription_t : typedescription_t
 	
 	void set_name(const std::string &name)
 	{
+		clear_name();
+		
 		size_t len = name.length();
 		fieldName = (char *)malloc(len+1);
 		strncpy((char *)fieldName, name.c_str(), len);
@@ -296,6 +298,8 @@ struct custom_datamap_t : datamap_t
 {
 	void set_name(const std::string &name)
 	{
+		clear_name();
+		
 		size_t len = name.length();
 		dataClassName = (char *)malloc(len+1);
 		strncpy((char *)dataClassName, name.c_str(), len);
@@ -480,6 +484,34 @@ SH_DECL_HOOK0(CBaseEntity, GetServerClass, SH_NOATTRIB, 0, ServerClass *);
 class custom_ServerClass
 {
 public:
+	custom_ServerClass()
+	{
+		m_pNetworkName = nullptr;
+	}
+	
+	void set_name(const std::string &name)
+	{
+		clear_name();
+		
+		size_t len = name.length();
+		m_pNetworkName = (char *)malloc(len+1);
+		strncpy((char *)m_pNetworkName, name.c_str(), len);
+		((char *)m_pNetworkName)[len] = '\0';
+	}
+	
+	void clear_name()
+	{
+		if(m_pNetworkName != nullptr) {
+			free((void *)m_pNetworkName);
+		}
+		m_pNetworkName = nullptr;
+	}
+	
+	~custom_ServerClass()
+	{
+		clear_name();
+	}
+	
 	const char					*m_pNetworkName;
 	SendTable					*m_pTable;
 	ServerClass					*m_pNext;
@@ -622,6 +654,39 @@ struct unexclude_prop_t
 	SendProp *prop = nullptr;
 };
 
+class custom_SendTable : public SendTable
+{
+public:
+	custom_SendTable()
+		: SendTable()
+	{
+		m_pNetTableName = nullptr;
+	}
+	
+	void set_name(const std::string &name)
+	{
+		clear_name();
+		
+		size_t len = name.length();
+		m_pNetTableName = (char *)malloc(len+1);
+		strncpy((char *)m_pNetTableName, name.c_str(), len);
+		((char *)m_pNetTableName)[len] = '\0';
+	}
+	
+	void clear_name()
+	{
+		if(m_pNetTableName != nullptr) {
+			free((void *)m_pNetTableName);
+		}
+		m_pNetTableName = nullptr;
+	}
+	
+	~custom_SendTable()
+	{
+		clear_name();
+	}
+};
+
 struct serverclass_override_t
 {
 	serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_);
@@ -644,13 +709,14 @@ struct serverclass_override_t
 	void do_override(CBaseEntity *pEntity);
 	
 	void override_with(ServerClass *netclass);
+	void override_with(const std::string &netname, const std::string &dtname);
 	void set_base_class(SendTable *table);
 	void unexclude_prop(SendProp *prop, SendProp *realprop);
 	
 	IEntityFactory *fac = nullptr;
 	bool fac_is_sp = false;
 	custom_ServerClass cls{};
-	SendTable tbl{};
+	custom_SendTable tbl{};
 	std::vector<SendProp> props{};
 	ServerClass *realcls = nullptr;
 	ServerClass *fakecls = nullptr;
@@ -661,6 +727,7 @@ struct serverclass_override_t
 	bool freehndl = true;
 	bool was_overriden = false;
 	bool base_class_set = false;
+	bool set_classid = false;
 	SendProp *m_pProps = nullptr;
 	std::vector<unexclude_prop_t> exclude_props{};
 };
@@ -836,17 +903,6 @@ public:
 	}
 };
 
-void serverclass_override_t::override_with(ServerClass *netclass)
-{
-	fakecls = netclass;
-	
-	tbl.m_pNetTableName = fakecls->m_pTable->m_pNetTableName;
-	
-	cls.m_ClassID = fakecls->m_ClassID;
-	cls.m_pNetworkName = fakecls->m_pNetworkName;
-	cls.m_InstanceBaselineIndex = fakecls->m_InstanceBaselineIndex;
-}
-
 void serverclass_override_t::unexclude_prop(SendProp *prop, SendProp *realprop)
 {
 	const char *m_pExcludeDTName = prop->m_pExcludeDTName;
@@ -892,6 +948,49 @@ void serverclass_override_t::set_base_class(SendTable *table2)
 	base_class_set = true;
 }
 
+size_t custom_server_classid = 0;
+
+void serverclass_override_t::override_with(const std::string &netname, const std::string &dtname)
+{
+	fakecls = nullptr;
+	
+	tbl.set_name(dtname);
+	
+	if(!set_classid) {
+		++custom_server_classid;
+		
+		set_classid = true;
+		
+		cls.m_ClassID = custom_server_classid;
+	}
+	
+	cls.set_name(netname);
+	
+	char idString[32];
+	Q_snprintf(idString, sizeof(idString), "%d", cls.m_ClassID);
+
+	bool lock = engine->LockNetworkStringTables(true);
+	cls.m_InstanceBaselineIndex = m_pInstanceBaselineTable->AddString(true, idString, 0, nullptr);
+	engine->LockNetworkStringTables(lock);
+}
+
+void serverclass_override_t::override_with(ServerClass *netclass)
+{
+	fakecls = netclass;
+	
+	if(set_classid) {
+		--custom_server_classid;
+		set_classid = false;
+	}
+	
+	tbl.set_name(fakecls->m_pTable->m_pNetTableName);
+	
+	cls.set_name(fakecls->m_pNetworkName);
+	
+	cls.m_ClassID = fakecls->m_ClassID;
+	cls.m_InstanceBaselineIndex = fakecls->m_InstanceBaselineIndex;
+}
+
 serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_)
 	: fac{fac_}, clsname{std::move(clsname_)}, realcls{realcls_}
 {
@@ -916,13 +1015,13 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	
 	tbl.m_pProps = props.data();
 	tbl.m_nProps = props.size();
-	tbl.m_pNetTableName = realcls->m_pTable->m_pNetTableName;
+	tbl.set_name(realcls->m_pTable->m_pNetTableName);
 	tbl.m_pPrecalc = realcls->m_pTable->m_pPrecalc;
 	
 	cls.m_pTable = &tbl;
 	
 	cls.m_ClassID = realcls->m_ClassID;
-	cls.m_pNetworkName = realcls->m_pNetworkName;
+	cls.set_name(realcls->m_pNetworkName);
 	cls.m_InstanceBaselineIndex = realcls->m_InstanceBaselineIndex;
 	
 	if(!custom_server_head) {
@@ -945,7 +1044,7 @@ serverclass_override_t::~serverclass_override_t()
 	}
 	
 	for(ServerClass *cur = custom_server_head, *prev = nullptr; cur != nullptr; prev = cur, cur = cur->m_pNext) {
-		if (cur == (ServerClass *)this) {
+		if(cur == (ServerClass *)this) {
 			if(prev != nullptr) {
 				prev->m_pNext = cur->m_pNext;
 			} else {
@@ -958,6 +1057,10 @@ serverclass_override_t::~serverclass_override_t()
 	
 	if(!custom_server_head) {
 		g_pServerClassTail->m_pNext = nullptr;
+	}
+	
+	if(set_classid) {
+		--custom_server_classid;
 	}
 	
 	exclude_props.clear();
@@ -1370,6 +1473,10 @@ cell_t CustomSendtableoverride_with(IPluginContext *pContext, const cell_t *para
 		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
 	}
 	
+	if(factory->set_classid || factory->fakecls != nullptr) {
+		return pContext->ThrowNativeError("already has been overriden");
+	}
+	
 	char *netname = nullptr;
 	pContext->LocalToString(params[2], &netname);
 	
@@ -1379,6 +1486,31 @@ cell_t CustomSendtableoverride_with(IPluginContext *pContext, const cell_t *para
 	}
 	
 	factory->override_with(netclass);
+	return 0;
+}
+
+cell_t CustomSendtableoverride_with_ex(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	serverclass_override_t *factory = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	if(factory->set_classid || factory->fakecls != nullptr) {
+		return pContext->ThrowNativeError("already has been overriden");
+	}
+	
+	char *netname = nullptr;
+	pContext->LocalToString(params[2], &netname);
+	
+	char *dtname = nullptr;
+	pContext->LocalToString(params[3], &dtname);
+	
+	factory->override_with(netname, dtname);
 	return 0;
 }
 
@@ -1478,6 +1610,7 @@ sp_nativeinfo_t natives[] =
 	{"EntityFactoryDictionary.remove", EntityFactoryDictionaryremove},
 	{"CustomSendtable.from_factory", CustomSendtablefrom_factory},
 	{"CustomSendtable.override_with", CustomSendtableoverride_with},
+	{"CustomSendtable.override_with_ex", CustomSendtableoverride_with_ex},
 	{"CustomSendtable.unexclude_prop", CustomSendtableunexclude_prop},
 	{"CustomSendtable.set_base_class", CustomSendtableset_base_class},
 	{"CustomDatamap.from_classname", CustomDatamapfrom_classname},
@@ -1530,6 +1663,7 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	while(g_pServerClassTail && g_pServerClassTail->m_pNext) {
 		g_pServerClassTail = g_pServerClassTail->m_pNext;
 	}
+	custom_server_classid = g_pServerClassTail->m_ClassID;
 	m_pInstanceBaselineTable = netstringtables->FindTable(INSTANCE_BASELINE_TABLENAME);
 	server = engine->GetIServer();
 	return true;
