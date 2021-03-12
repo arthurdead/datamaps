@@ -145,13 +145,11 @@ HandleType_t removal_handle = 0;
 HandleType_t serverclass_handle = 0;
 
 template <typename R, typename T, typename ...Args>
-R call_vfunc(T *pThisPtr, size_t offset, Args ...args)
+R call_mfunc(T *pThisPtr, void *offset, Args ...args)
 {
 	class VEmptyClass {};
 	
 	void **this_ptr = *reinterpret_cast<void ***>(&pThisPtr);
-	void **vtable = *reinterpret_cast<void ***>(pThisPtr);
-	void *vfunc = vtable[offset];
 	
 	union
 	{
@@ -159,7 +157,7 @@ R call_vfunc(T *pThisPtr, size_t offset, Args ...args)
 #ifndef PLATFORM_POSIX
 		void *addr;
 	} u;
-	u.addr = vfunc;
+	u.addr = offset;
 #else
 		struct  
 		{
@@ -167,11 +165,20 @@ R call_vfunc(T *pThisPtr, size_t offset, Args ...args)
 			intptr_t adjustor;
 		} s;
 	} u;
-	u.s.addr = vfunc;
+	u.s.addr = offset;
 	u.s.adjustor = 0;
 #endif
 	
 	return (R)(reinterpret_cast<VEmptyClass *>(this_ptr)->*u.mfpnew)(args...);
+}
+
+template <typename R, typename T, typename ...Args>
+R call_vfunc(T *pThisPtr, size_t offset, Args ...args)
+{
+	void **vtable = *reinterpret_cast<void ***>(pThisPtr);
+	void *vfunc = vtable[offset];
+	
+	return call_mfunc<R, T, Args...>(pThisPtr, vfunc, args...);
 }
 
 class CBaseEntity : public IServerEntity
