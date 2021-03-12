@@ -1616,6 +1616,7 @@ sp_nativeinfo_t natives[] =
 	{"EntityFactoryDictionary.register_function", EntityFactoryDictionaryregister_function},
 	{"EntityFactoryDictionary.remove", EntityFactoryDictionaryremove},
 	{"CustomSendtable.from_factory", CustomSendtablefrom_factory},
+	{"CustomSendtable.from_classname", CustomSendtablefrom_classname},
 	{"CustomSendtable.override_with", CustomSendtableoverride_with},
 	{"CustomSendtable.override_with_ex", CustomSendtableoverride_with_ex},
 	{"CustomSendtable.unexclude_prop", CustomSendtableunexclude_prop},
