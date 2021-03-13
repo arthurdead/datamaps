@@ -748,6 +748,7 @@ struct serverclass_override_t
 	bool base_class_set = false;
 	bool set_classid = false;
 	SendProp *m_pProps = nullptr;
+	int size = 0;
 	std::vector<unexclude_prop_t> exclude_props{};
 };
 
@@ -840,6 +841,7 @@ sp_entity_factory::~sp_entity_factory()
 }
 
 custom_prop_info_t *curr_data_info = nullptr;
+serverclass_override_t *curr_server_info = nullptr;
 
 using info_map_t = std::unordered_map<std::string, custom_prop_info_t *>;
 info_map_t info_map{};
@@ -1202,6 +1204,8 @@ IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
 	
 	if(based != nullptr) {
 		last_cb = based->GetEntitySize();
+		curr_data_info = nullptr;
+		curr_server_info = nullptr;
 		net = based->Create(pClassName);
 		CBaseEntity *pEntity = net->GetBaseEntity();
 		if(has_custom_prop) {
@@ -1251,7 +1255,10 @@ IServerNetworkable *custom_prop_info_t::HookCreate(const char *classname)
 IServerNetworkable *serverclass_override_t::HookCreate(const char *classname)
 {
 	IEntityFactory *fac = META_IFACEPTR(IEntityFactory);
+	
+	curr_server_info = this;
 	IServerNetworkable *net = SH_CALL(fac, &IEntityFactory::Create)(classname);
+	curr_server_info = nullptr;
 	
 	CBaseEntity *pEntity = net->GetBaseEntity();
 	
@@ -1262,13 +1269,17 @@ IServerNetworkable *serverclass_override_t::HookCreate(const char *classname)
 
 void *HookPvAllocEntPrivateData(long cb)
 {
+	last_cb = cb;
+	
 	if(curr_data_info != nullptr) {
-		last_cb = cb;
 		cb += curr_data_info->size;
-		RETURN_META_VALUE_NEWPARAMS(MRES_HANDLED, nullptr, &IVEngineServer::PvAllocEntPrivateData, (cb));
-	} else {
-		RETURN_META_VALUE(MRES_IGNORED, nullptr);
 	}
+	
+	if(curr_server_info != nullptr) {
+		cb += curr_server_info->size;
+	}
+	
+	RETURN_META_VALUE_NEWPARAMS(MRES_HANDLED, nullptr, &IVEngineServer::PvAllocEntPrivateData, (cb));
 }
 
 cell_t IEntityFactoryCustomget(IPluginContext *pContext, const cell_t *params)
