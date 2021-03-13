@@ -584,9 +584,19 @@ SendTable *UTIL_FindSendtableInSendTable(SendTable *pTable, const char *name)
 
 void assign_prop(SendProp *prop, SendProp *realprop)
 {
+	if(realprop->GetType() != DPT_DataTable) {
+		prop->SetProxyFn(realprop->GetProxyFn());
+	} else {
+		prop->SetProxyFn(nullptr);
+	}
+	
+	if(realprop->GetType() == DPT_DataTable) {
+		prop->SetDataTableProxyFn(realprop->GetDataTableProxyFn());
+	} else {
+		prop->SetDataTableProxyFn(nullptr);
+	}
+	
 	prop->SetOffset(realprop->GetOffset());
-	prop->SetProxyFn(realprop->GetProxyFn());
-	prop->SetDataTableProxyFn(realprop->GetDataTableProxyFn());
 	prop->SetDataTable(realprop->GetDataTable());
 	prop->SetParentArrayPropName((char *)realprop->GetParentArrayPropName());
 	prop->SetArrayProp(realprop->GetArrayProp());
@@ -608,18 +618,20 @@ void assign_prop(SendProp *prop, SendProp *realprop)
 	prop->m_fHighLowMul = realprop->m_fHighLowMul;
 }
 
-SendTable *get_send_table(const char *classname, const char *tablename, SendTable **clstable = nullptr)
+ServerClass *FindServerClass(const char *classname)
 {
+#if 1
 	ServerClass *srvcls = gamehelpers->FindServerClass(classname);
-	if(!srvcls) {
-		return nullptr;
+#else
+	ServerClass *srvcls = gamedll->GetAllServerClasses();
+	while(srvcls) {
+		if(strcmp(classname, srvcls->GetName()) == 0) {
+			break;
+		}
+		srvcls = srvcls->m_pNext;
 	}
-	
-	if(clstable) {
-		*clstable = srvcls->m_pTable;
-	}
-	
-	return UTIL_FindSendtableInSendTable(srvcls->m_pTable, tablename);
+#endif
+	return srvcls;
 }
 
 struct unexclude_prop_t
@@ -1031,6 +1043,8 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	cls.set_name(realcls->m_pNetworkName);
 	cls.m_InstanceBaselineIndex = realcls->m_InstanceBaselineIndex;
 	
+	cls.m_pNext = nullptr;
+	
 	if(!custom_server_head) {
 		custom_server_head = (ServerClass *)&cls;
 		g_pServerClassTail->m_pNext = custom_server_head;
@@ -1417,8 +1431,8 @@ cell_t CustomSendtableunexclude_prop(IPluginContext *pContext, const cell_t *par
 	char *name = nullptr;
 	pContext->LocalToString(params[3], &name);
 
-	SendTable *clstable = nullptr;
-	SendTable *table = get_send_table(factory->clsname.c_str(), tablename, &clstable);
+	SendTable *clstable = factory->realcls->m_pTable;
+	SendTable *table = UTIL_FindSendtableInSendTable(clstable, tablename);
 	if(!table) {
 		return pContext->ThrowNativeError("invalid table %s", tablename);
 	}
@@ -1460,7 +1474,7 @@ cell_t CustomSendtableset_base_class(IPluginContext *pContext, const cell_t *par
 	char *netname = nullptr;
 	pContext->LocalToString(params[2], &netname);
 	
-	ServerClass *svcls = gamehelpers->FindServerClass(netname);
+	ServerClass *svcls = FindServerClass(netname);
 	if(!svcls) {
 		return pContext->ThrowNativeError("invalid netname %s", netname);
 	}
@@ -1487,7 +1501,7 @@ cell_t CustomSendtableoverride_with(IPluginContext *pContext, const cell_t *para
 	char *netname = nullptr;
 	pContext->LocalToString(params[2], &netname);
 	
-	ServerClass *netclass = gamehelpers->FindServerClass(netname);
+	ServerClass *netclass = FindServerClass(netname);
 	if(!netclass) {
 		return pContext->ThrowNativeError("invalid netname %s", netname);
 	}
@@ -1538,12 +1552,13 @@ cell_t CustomSendtablefrom_classname(IPluginContext *pContext, const cell_t *par
 	char *netname = nullptr;
 	pContext->LocalToString(params[2], &netname);
 	
-	ServerClass *netclass = gamehelpers->FindServerClass(netname);
+	ServerClass *netclass = FindServerClass(netname);
 	if(!netclass) {
 		return pContext->ThrowNativeError("invalid netname %s", netname);
 	}
 	
-	serverclass_override_t *obj = new serverclass_override_t{factory, classname, netclass};
+	std::string clsname{classname};
+	serverclass_override_t *obj = new serverclass_override_t{factory, std::move(clsname), netclass};
 	Handle_t hndl = handlesys->CreateHandle(serverclass_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;
 	obj->pContext = pContext;
@@ -1571,7 +1586,7 @@ cell_t CustomSendtablefrom_factory(IPluginContext *pContext, const cell_t *param
 	char *netname = nullptr;
 	pContext->LocalToString(params[2], &netname);
 	
-	ServerClass *netclass = gamehelpers->FindServerClass(netname);
+	ServerClass *netclass = FindServerClass(netname);
 	if(!netclass) {
 		return pContext->ThrowNativeError("invalid netname %s", netname);
 	}
