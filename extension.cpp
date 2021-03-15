@@ -40,6 +40,7 @@
 #define RAD_TELEMETRY_DISABLED
 
 #include "extension.h"
+#include <CDetour/detours.h>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -143,6 +144,14 @@ HandleType_t factory_handle = 0;
 HandleType_t datamap_handle = 0;
 HandleType_t removal_handle = 0;
 HandleType_t serverclass_handle = 0;
+
+template <typename T>
+int vfunc_index(T func)
+{
+	SourceHook::MemFuncInfo info{};
+	SourceHook::GetFuncInfo<T>(func, info);
+	return info.vtblindex;
+}
 
 template <typename R, typename T, typename ...Args>
 R call_mfunc(T *pThisPtr, void *offset, Args ...args)
@@ -358,10 +367,22 @@ struct custom_prop_info_t
 		for(custom_typedescription_t &desc : dataDesc) {
 			int offset = desc.fieldOffset[TD_OFFSET_NORMAL];
 			switch(desc.fieldType) {
-				case FIELD_INTEGER: { *(int *)(((unsigned char *)pEntity) + offset) = 0; break; }
-				case FIELD_FLOAT: { *(float *)(((unsigned char *)pEntity) + offset) = 0.0f; break; }
-				case FIELD_BOOLEAN: { *(bool *)(((unsigned char *)pEntity) + offset) = false; break; }
-				case FIELD_EHANDLE: { *(EHANDLE *)(((unsigned char *)pEntity) + offset) = nullptr; break; }
+				case FIELD_INTEGER: {
+					*(int *)(((unsigned char *)pEntity) + offset) = 0;
+					break;
+				}
+				case FIELD_FLOAT: {
+					*(float *)(((unsigned char *)pEntity) + offset) = 0.0f;
+					break;
+				}
+				case FIELD_BOOLEAN: {
+					*(bool *)(((unsigned char *)pEntity) + offset) = false;
+					break;
+				}
+				case FIELD_EHANDLE: {
+					new ((EHANDLE *)(((unsigned char *)pEntity) + offset)) EHANDLE();
+					break;
+				}
 				case FIELD_VECTOR: {
 					vec3_t &vec = *(vec3_t *)(((unsigned char *)pEntity) + offset);
 					vec[0] = 0.0f;
@@ -1117,6 +1138,26 @@ serverclass_override_t::~serverclass_override_t()
 	}
 }
 
+void *DoPvAllocEntPrivateData(long cb)
+{
+	last_cb = cb;
+	
+	if(curr_data_info != nullptr) {
+		cb += curr_data_info->size;
+	}
+	
+	if(curr_server_info != nullptr) {
+		cb += curr_server_info->size;
+	}
+	
+	return calloc(1, cb);
+}
+
+void *HookPvAllocEntPrivateData(long cb)
+{
+	RETURN_META_VALUE(MRES_SUPERCEDE, DoPvAllocEntPrivateData(cb));
+}
+
 custom_prop_info_t::custom_prop_info_t(IEntityFactory *fac_, std::string &&clsname_)
 	: fac{fac_}, clsname{std::move(clsname_)}
 {
@@ -1199,36 +1240,33 @@ IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
 {
 	IServerNetworkable *net = nullptr;
 	
-	bool has_custom_prop = custom_prop != nullptr;
-	bool has_custom_server = custom_server != nullptr;
-	
 	if(based != nullptr) {
 		last_cb = based->GetEntitySize();
+		curr_data_info = custom_prop;
+		curr_server_info = custom_server;
+		net = based->Create(pClassName);
 		curr_data_info = nullptr;
 		curr_server_info = nullptr;
-		net = based->Create(pClassName);
 		CBaseEntity *pEntity = net->GetBaseEntity();
-		if(has_custom_prop) {
-			if(pEntity) {
-				custom_prop->do_override(pEntity);
-			}
+		if(custom_prop) {
+			custom_prop->do_override(pEntity);
 		}
-		if(has_custom_server) {
+		if(custom_server) {
 			custom_server->do_override(pEntity);
 		}
 	} else if(func != nullptr) {
 		cell_t res = 0;
-		func->PushCell(has_custom_prop ? custom_prop->size : 0);
+		func->PushCell(custom_prop ? custom_prop->size : 0);
 		func->Execute(&res);
 		last_cb = size;
 		CBaseEntity *obj = (CBaseEntity *)res;
 		if(obj != nullptr) {
 			obj->PostConstructor(pClassName);
 			net = obj->GetNetworkable();
-			if(has_custom_prop) {
+			if(custom_prop) {
 				custom_prop->do_override(obj);
 			}
-			if(has_custom_server) {
+			if(custom_server) {
 				custom_server->do_override(obj);
 			}
 		}
@@ -1265,21 +1303,6 @@ IServerNetworkable *serverclass_override_t::HookCreate(const char *classname)
 	do_override(pEntity);
 	
 	RETURN_META_VALUE(MRES_SUPERCEDE, net);
-}
-
-void *HookPvAllocEntPrivateData(long cb)
-{
-	last_cb = cb;
-	
-	if(curr_data_info != nullptr) {
-		cb += curr_data_info->size;
-	}
-	
-	if(curr_server_info != nullptr) {
-		cb += curr_server_info->size;
-	}
-	
-	RETURN_META_VALUE_NEWPARAMS(MRES_HANDLED, nullptr, &IVEngineServer::PvAllocEntPrivateData, (cb));
 }
 
 cell_t IEntityFactoryCustomget(IPluginContext *pContext, const cell_t *params)
@@ -1683,13 +1706,24 @@ void Sample::OnHandleDestroy(HandleType_t type, void *object)
 	}
 }
 
+CDetour *pPvAllocEntPrivateData = nullptr;
+
+DETOUR_DECL_MEMBER1(DetourPvAllocEntPrivateData, void *, long, cb)
+{
+	return DoPvAllocEntPrivateData(cb);
+}
+
+#define SOURCEHOOK_BEING_STUPID
+
 bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool late)
 {
 	gpGlobals = ismm->GetCGlobals();
 	GET_V_IFACE_ANY(GetServerFactory, servertools, IServerTools, VSERVERTOOLS_INTERFACE_VERSION)
 	GET_V_IFACE_ANY(GetEngineFactory, engine, IVEngineServer, INTERFACEVERSION_VENGINESERVER)
 	dictionary = (CEntityFactoryDictionary *)servertools->GetEntityFactoryDictionary();
+#ifndef SOURCEHOOK_BEING_STUPID
 	SH_ADD_HOOK(IVEngineServer, PvAllocEntPrivateData, engine, SH_STATIC(&HookPvAllocEntPrivateData), false);
+#endif
 	GET_V_IFACE_ANY(GetServerFactory, gamedll, IServerGameDLL, INTERFACEVERSION_SERVERGAMEDLL)
 	GET_V_IFACE_ANY(GetEngineFactory, netstringtables, INetworkStringTableContainer, INTERFACENAME_NETWORKSTRINGTABLESERVER)
 	g_pServerClassHead = gamedll->GetAllServerClasses();
@@ -1703,14 +1737,22 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	return true;
 }
 
+IGameConfig *g_pGameConf = nullptr;
+
 bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 {
-	IGameConfig *g_pGameConf = nullptr;
 	gameconfs->LoadGameConfigFile("datamaps", &g_pGameConf, error, maxlen);
 
 	g_pGameConf->GetOffset("CBaseEntity::PostConstructor", &CBaseEntityPostConstructor);
 
-	gameconfs->CloseGameConfigFile(g_pGameConf);
+	CDetourManager::Init(g_pSM->GetScriptingEngine(), g_pGameConf);
+	
+#ifdef SOURCEHOOK_BEING_STUPID
+	void **vtable = *(void ***)engine;
+	int index = vfunc_index(&IVEngineServer::PvAllocEntPrivateData);
+	pPvAllocEntPrivateData = DETOUR_CREATE_MEMBER(DetourPvAllocEntPrivateData, vtable[index])
+	pPvAllocEntPrivateData->EnableDetour();
+#endif
 	
 	g_pEntityList = reinterpret_cast<CBaseEntityList *>(gamehelpers->GetGlobalEntityList());
 	
@@ -1762,10 +1804,14 @@ void Sample::NotifyInterfaceDrop(SMInterface *pInterface)
 
 void Sample::SDK_OnUnload()
 {
+	if(pPvAllocEntPrivateData) {
+		pPvAllocEntPrivateData->Destroy();
+	}
 	g_pSDKHooks->RemoveEntityListener(this);
 	plsys->RemovePluginsListener(this);
 	handlesys->RemoveType(factory_handle, myself->GetIdentity());
 	handlesys->RemoveType(datamap_handle, myself->GetIdentity());
 	handlesys->RemoveType(removal_handle, myself->GetIdentity());
 	handlesys->RemoveType(serverclass_handle, myself->GetIdentity());
+	gameconfs->CloseGameConfigFile(g_pGameConf);
 }
