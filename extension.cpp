@@ -500,6 +500,7 @@ struct custom_prop_info_t
 		CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
 		SH_REMOVE_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
 		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
+		RETURN_META(MRES_IGNORED);
 	}
 	
 	void do_override(CBaseEntity *pEntity);
