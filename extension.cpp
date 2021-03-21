@@ -336,7 +336,7 @@ struct custom_datamap_t : datamap_t
 	}
 };
 
-SH_DECL_MANUALHOOK0_void(GenericDtor, 0, 0, 0)
+SH_DECL_MANUALHOOK0_void(GenericDtor, 1, 0, 0)
 SH_DECL_HOOK1(IEntityFactory, Create, SH_NOATTRIB, 0, IServerNetworkable *, const char *);
 SH_DECL_HOOK1(IVEngineServer, PvAllocEntPrivateData, SH_NOATTRIB, 0, void *, long);
 SH_DECL_HOOK0(CBaseEntity, GetDataDescMap, SH_NOATTRIB, 0, datamap_t *);
