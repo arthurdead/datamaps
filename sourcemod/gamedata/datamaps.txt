@@ -9,5 +9,23 @@
 				"linux" "27"
 			}
 		}
+		"Signatures"
+		{
+			"SimThink_EntityChanged"
+			{
+				"library" "server"
+				"linux" "@_Z22SimThink_EntityChangedP11CBaseEntity"
+			}
+			"AllocPooledString"
+			{
+				"library" "server"
+				"linux" "@_Z17AllocPooledStringPKc"
+			}
+			"CBaseEntity::PhysicsRunSpecificThink"
+			{
+				"library" "server"
+				"linux" "@_ZN11CBaseEntity23PhysicsRunSpecificThinkEiMS_FvvE"
+			}
+		}
 	}
 }

@@ -7,6 +7,12 @@ typeset datamaps_functions
 {
 	//EntityFactoryDictionary.register_function
 	function Address (int size_modifier);
+
+	//SetEntityContextThink
+	function void (int entity, const char[] context, any data);
+
+	//SetEntityThink
+	function void (int entity, any data);
 };
 
 methodmap IEntityFactory
@@ -85,6 +91,11 @@ methodmap CustomDatamap < Handle
 
 	public native void add_prop(const char[] name, custom_prop_type type);
 };
+
+native void SetEntityContextThink(int entity, datamaps_functions func, float time, const char[] context, any data = 0);
+native void SetEntityThink(int entity, datamaps_functions func, float time, any data = 0);
+native void SetEntityNextThink(int entity, float time);
+native void SetEntityNextThinkContext(int entity, float time, const char[] context = "");
 
 #if !defined REQUIRE_EXTENSIONS
 public void __ext_datamaps_SetNTVOptional()

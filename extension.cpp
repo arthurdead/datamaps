@@ -146,6 +146,14 @@ HandleType_t removal_handle = 0;
 HandleType_t serverclass_handle = 0;
 
 template <typename T>
+T void_to_func(void *ptr)
+{
+	union { T f; void *p; };
+	p = ptr;
+	return f;
+}
+
+template <typename T>
 int vfunc_index(T func)
 {
 	SourceHook::MemFuncInfo info{};
@@ -190,6 +198,93 @@ R call_vfunc(T *pThisPtr, size_t offset, Args ...args)
 	return call_mfunc<R, T, Args...>(pThisPtr, vfunc, args...);
 }
 
+int m_aThinkFunctionsOffset = -1;
+int m_pfnThinkOffset = -1;
+int m_iEFlagsOffset = -1;
+int m_nNextThinkTickOffset = -1;
+void *SimThink_EntityChangedPtr = nullptr;
+
+void *AllocPooledStringPtr = nullptr;
+
+void SetEdictStateChanged(CBaseEntity *pEntity, int offset);
+
+void SimThink_EntityChanged(CBaseEntity *pEntity)
+{
+	(void_to_func<void(*)(CBaseEntity *)>(SimThink_EntityChangedPtr))(pEntity);
+}
+
+typedef void (CBaseEntity::*BASEPTR)(void);
+
+struct thinkfunc_t
+{
+	BASEPTR		m_pfnThink;
+	string_t	m_iszContext;
+	int			m_nNextThinkTick;
+	int			m_nLastThinkTick;
+
+	DECLARE_SIMPLE_DATADESC();
+};
+
+string_t AllocPooledString(const char *szContext)
+{
+	return (void_to_func<string_t(*)(const char *)>(AllocPooledStringPtr))(szContext);
+}
+
+#define SetThink( a ) ThinkSet( static_cast <void (CBaseEntity::*)(void)> (a), 0, NULL )
+#define SetContextThink( a, b, context ) ThinkSet( static_cast <void (CBaseEntity::*)(void)> (a), (b), context )
+
+SH_DECL_MANUALHOOK0_void(GenericDtor, 1, 0, 0)
+
+struct callback_holder_t
+{
+	struct callback_t
+	{
+		IPluginFunction *callback = nullptr;
+		cell_t data = 0;
+	};
+	
+	callback_t think{};
+	
+	std::unordered_map<std::string, callback_t> thinkctxs{};
+	
+	CBaseEntity *pEntity_ = nullptr;
+	IdentityToken_t *owner = nullptr;
+	bool erase = true;
+	
+	callback_holder_t(CBaseEntity *pEntity, IdentityToken_t *owner_);
+	~callback_holder_t();
+	
+	void dtor(CBaseEntity *pEntity)
+	{
+		delete this;
+	}
+
+	void HookEntityDtor()
+	{
+		CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
+		dtor(pEntity);
+		RETURN_META(MRES_IGNORED);
+	}
+};
+
+using callback_holder_map_t = std::unordered_map<CBaseEntity *, callback_holder_t *>;
+callback_holder_map_t callbackmap{};
+
+callback_holder_t::callback_holder_t(CBaseEntity *pEntity, IdentityToken_t *owner_)
+	: pEntity_{pEntity}, owner{owner_}
+{
+	SH_ADD_MANUALHOOK(GenericDtor, pEntity_, SH_MEMBER(this, &callback_holder_t::HookEntityDtor), false);
+	
+	callbackmap[pEntity_] = this;
+}
+
+callback_holder_t::~callback_holder_t()
+{
+	if(erase) {
+		callbackmap.erase(pEntity_);
+	}
+}
+
 class CBaseEntity : public IServerEntity
 {
 public:
@@ -201,7 +296,231 @@ public:
 	{
 		call_vfunc<void, CBaseEntity, const char *>(this, CBaseEntityPostConstructor, classname);
 	}
+	
+	using m_pfnThink_t = void (CBaseEntity::*)(void);
+	using m_aThinkFunctions_t = CUtlVector<thinkfunc_t>;
+	
+	m_pfnThink_t &GetThinkFunc()
+	{
+		if(m_pfnThinkOffset == -1) {
+			sm_datatable_info_t info{};
+			datamap_t *pMap = gamehelpers->GetDataMap(this);
+			gamehelpers->FindDataMapInfo(pMap, "m_pfnThink", &info);
+			m_pfnThinkOffset = info.actual_offset;
+		}
+		
+		return *(m_pfnThink_t *)((unsigned char *)this + m_pfnThinkOffset);
+	}
+	
+	m_aThinkFunctions_t &GetAThinkFuncstions()
+	{
+		if(m_aThinkFunctionsOffset == -1) {
+			sm_datatable_info_t info{};
+			datamap_t *pMap = gamehelpers->GetDataMap(this);
+			gamehelpers->FindDataMapInfo(pMap, "m_aThinkFunctions", &info);
+			m_aThinkFunctionsOffset = info.actual_offset;
+		}
+		
+		return *(m_aThinkFunctions_t *)((unsigned char *)this + m_aThinkFunctionsOffset);
+	}
+	
+	int &GetIEFlags()
+	{
+		if(m_iEFlagsOffset == -1) {
+			sm_datatable_info_t info{};
+			datamap_t *pMap = gamehelpers->GetDataMap(this);
+			gamehelpers->FindDataMapInfo(pMap, "m_iEFlags", &info);
+			m_iEFlagsOffset = info.actual_offset;
+		}
+		
+		return *(int *)((unsigned char *)this + m_iEFlagsOffset);
+	}
+	
+	int &GetNextThinkTick()
+	{
+		if(m_nNextThinkTickOffset == -1) {
+			sm_datatable_info_t info{};
+			datamap_t *pMap = gamehelpers->GetDataMap(this);
+			gamehelpers->FindDataMapInfo(pMap, "m_nNextThinkTick", &info);
+			m_nNextThinkTickOffset = info.actual_offset;
+		}
+		
+		return *(int *)((unsigned char *)this + m_nNextThinkTickOffset);
+	}
+	
+	void SetNextThinkTick(int tick)
+	{
+		GetNextThinkTick() = tick;
+		SetEdictStateChanged(this, m_nNextThinkTickOffset);
+	}
+	
+	bool WillThink()
+	{
+		if ( GetNextThinkTick() > 0 )
+			return true;
+
+		for ( int i = 0; i < GetAThinkFuncstions().Count(); i++ )
+		{
+			if ( GetAThinkFuncstions()[i].m_nNextThinkTick > 0 )
+				return true;
+		}
+
+		return false;
+	}
+	
+	void CheckHasThinkFunction( bool isThinking )
+	{
+		if ( ( GetIEFlags() & EFL_NO_THINK_FUNCTION ) && isThinking )
+		{
+			GetIEFlags() &= ~EFL_NO_THINK_FUNCTION;
+		}
+		else if ( !isThinking && !( GetIEFlags() & EFL_NO_THINK_FUNCTION ) && !WillThink() )
+		{
+			GetIEFlags() |= EFL_NO_THINK_FUNCTION ;
+		}
+		
+		SimThink_EntityChanged( this );
+	}
+	
+	int	GetIndexForThinkContext( const char *pszContext )
+	{
+		for ( int i = 0; i < GetAThinkFuncstions().Size(); i++ )
+		{
+			if ( !Q_strncmp( STRING( GetAThinkFuncstions()[i].m_iszContext ), pszContext, MAX_CONTEXT_LENGTH ) )
+				return i;
+		}
+
+		return NO_THINK_CONTEXT;
+	}
+	
+	int RegisterThinkContext( const char *szContext )
+	{
+		int iIndex = GetIndexForThinkContext( szContext );
+		if ( iIndex != NO_THINK_CONTEXT )
+			return iIndex;
+
+		// Make a new think func
+		thinkfunc_t sNewFunc;
+		Q_memset( &sNewFunc, 0, sizeof( sNewFunc ) );
+		sNewFunc.m_pfnThink = NULL;
+		sNewFunc.m_nNextThinkTick = 0;
+		sNewFunc.m_iszContext = AllocPooledString(szContext);
+
+		// Insert it into our list
+		return GetAThinkFuncstions().AddToTail( sNewFunc );
+	}
+	
+	BASEPTR	ThinkSet( BASEPTR func, float thinkTime, const char *szContext )
+	{
+		// Old system?
+		if ( !szContext )
+		{
+			GetThinkFunc() = func;
+			return GetThinkFunc();
+		}
+
+		// Find the think function in our list, and if we couldn't find it, register it
+		int iIndex = GetIndexForThinkContext( szContext );
+		if ( iIndex == NO_THINK_CONTEXT )
+		{
+			iIndex = RegisterThinkContext( szContext );
+		}
+
+		GetAThinkFuncstions()[ iIndex ].m_pfnThink = func;
+
+		if ( thinkTime != 0 )
+		{
+			int thinkTick = ( thinkTime == TICK_NEVER_THINK ) ? TICK_NEVER_THINK : TIME_TO_TICKS( thinkTime );
+			GetAThinkFuncstions()[ iIndex ].m_nNextThinkTick = thinkTick;
+			CheckHasThinkFunction( thinkTick == TICK_NEVER_THINK ? false : true );
+		}
+		return func;
+	}
+	
+	void SetNextThink( float thinkTime, const char *szContext )
+	{
+		int thinkTick = ( thinkTime == TICK_NEVER_THINK ) ? TICK_NEVER_THINK : TIME_TO_TICKS( thinkTime );
+
+		// Are we currently in a think function with a context?
+		int iIndex = 0;
+		if ( !szContext )
+		{
+			// Old system
+			SetNextThinkTick(thinkTick);
+			CheckHasThinkFunction( thinkTick == TICK_NEVER_THINK ? false : true );
+			return;
+		}
+		else
+		{
+			// Find the think function in our list, and if we couldn't find it, register it
+			iIndex = GetIndexForThinkContext( szContext );
+			if ( iIndex == NO_THINK_CONTEXT )
+			{
+				iIndex = RegisterThinkContext( szContext );
+			}
+		}
+
+		// Old system
+		GetAThinkFuncstions()[ iIndex ].m_nNextThinkTick = thinkTick;
+		CheckHasThinkFunction( thinkTick == TICK_NEVER_THINK ? false : true );
+	}
+	
+	void SetNextThinkContext( float thinkTime, int iIndex )
+	{
+		int thinkTick = ( thinkTime == TICK_NEVER_THINK ) ? TICK_NEVER_THINK : TIME_TO_TICKS( thinkTime );
+
+		// Old system
+		GetAThinkFuncstions()[ iIndex ].m_nNextThinkTick = thinkTick;
+		CheckHasThinkFunction( thinkTick == TICK_NEVER_THINK ? false : true );
+	}
+	
+	static int m_iCurrentThinkContext;
+	
+	void PluginThinkContext()
+	{
+		callback_holder_t *holder = callbackmap[this];
+		
+		if(m_iCurrentThinkContext >= 0 && m_iCurrentThinkContext < holder->thinkctxs.size()) {
+			auto it = holder->thinkctxs.begin();
+			std::advance(it, m_iCurrentThinkContext);
+			
+			IPluginFunction *func = it->second.callback;
+			func->PushCell(gamehelpers->EntityToBCompatRef(this));
+			func->PushString(it->first.c_str());
+			func->PushCell(it->second.data);
+			cell_t res = 0;
+			func->Execute(&res);
+		}
+	}
+	
+	void PluginThink()
+	{
+		callback_holder_t *holder = callbackmap[this];
+		
+		IPluginFunction *func = holder->think.callback;
+		func->PushCell(gamehelpers->EntityToBCompatRef(this));
+		func->PushCell(holder->think.data);
+		cell_t res = 0;
+		func->Execute(&res);
+	}
 };
+
+int CBaseEntity::m_iCurrentThinkContext = -1;
+
+DETOUR_DECL_MEMBER2(PhysicsRunSpecificThink, bool, int, nContextIndex, BASEPTR, thinkFunc)
+{
+	CBaseEntity::m_iCurrentThinkContext = nContextIndex;
+	bool ret = DETOUR_MEMBER_CALL(PhysicsRunSpecificThink)(nContextIndex, thinkFunc);
+	CBaseEntity::m_iCurrentThinkContext = -1;
+	return ret;
+}
+
+void SetEdictStateChanged(CBaseEntity *pEntity, int offset)
+{
+	IServerNetworkable *pNet = pEntity->GetNetworkable();
+	edict_t *edict = pNet->GetEdict();
+	gamehelpers->SetEdictStateChanged(edict, offset);
+}
 
 void remove_all_entities(const std::string &name)
 {
@@ -336,7 +655,6 @@ struct custom_datamap_t : datamap_t
 	}
 };
 
-SH_DECL_MANUALHOOK0_void(GenericDtor, 1, 0, 0)
 SH_DECL_HOOK1(IEntityFactory, Create, SH_NOATTRIB, 0, IServerNetworkable *, const char *);
 SH_DECL_HOOK1(IVEngineServer, PvAllocEntPrivateData, SH_NOATTRIB, 0, void *, long);
 SH_DECL_HOOK0(CBaseEntity, GetDataDescMap, SH_NOATTRIB, 0, datamap_t *);
@@ -1656,6 +1974,97 @@ cell_t EntityFactoryDictionaryfind(IPluginContext *pContext, const cell_t *param
 	return (cell_t)dictionary->FindFactory(classname);
 }	
 
+static cell_t SetEntityContextThink(IPluginContext *pContext, const cell_t *params)
+{
+	CBaseEntity *pEntity = gamehelpers->ReferenceToEntity(params[1]);
+	if(!pEntity) {
+		return pContext->ThrowNativeError("Invalid Entity Reference/Index %i", params[1]);
+	}
+	
+	callback_holder_t *holder = nullptr;
+	
+	callback_holder_map_t::iterator it{callbackmap.find(pEntity)};
+	if(it != callbackmap.end()) {
+		holder = it->second;
+	} else {
+		holder = new callback_holder_t{pEntity, pContext->GetIdentity()};
+	}
+	
+	char *context = nullptr;
+	pContext->LocalToString(params[4], &context);
+	
+	holder->thinkctxs[context].callback = pContext->GetFunctionById(params[2]);
+	holder->thinkctxs[context].data = params[5];
+	
+	pEntity->SetContextThink(&CBaseEntity::PluginThinkContext, sp_ctof(params[3]), context);
+	
+	return 0;
+}
+
+static cell_t SetEntityThink(IPluginContext *pContext, const cell_t *params)
+{
+	CBaseEntity *pEntity = gamehelpers->ReferenceToEntity(params[1]);
+	if(!pEntity) {
+		return pContext->ThrowNativeError("Invalid Entity Reference/Index %i", params[1]);
+	}
+	
+	callback_holder_t *holder = nullptr;
+	
+	callback_holder_map_t::iterator it{callbackmap.find(pEntity)};
+	if(it != callbackmap.end()) {
+		holder = it->second;
+	} else {
+		holder = new callback_holder_t{pEntity, pContext->GetIdentity()};
+	}
+	
+	holder->think.callback = pContext->GetFunctionById(params[2]);
+	holder->think.data = params[4];
+	
+	pEntity->SetThink(&CBaseEntity::PluginThink);
+	
+	return 0;
+}
+
+static cell_t SetEntityNextThink(IPluginContext *pContext, const cell_t *params)
+{
+	CBaseEntity *pEntity = gamehelpers->ReferenceToEntity(params[1]);
+	if(!pEntity) {
+		return pContext->ThrowNativeError("Invalid Entity Reference/Index %i", params[1]);
+	}
+	
+	pEntity->SetNextThink(sp_ctof(params[2]), nullptr);
+	return 0;
+}
+
+static cell_t SetEntityNextThinkContext(IPluginContext *pContext, const cell_t *params)
+{
+	CBaseEntity *pEntity = gamehelpers->ReferenceToEntity(params[1]);
+	if(!pEntity) {
+		return pContext->ThrowNativeError("Invalid Entity Reference/Index %i", params[1]);
+	}
+	
+	char *context = nullptr;
+	pContext->LocalToString(params[3], &context);
+	
+	int iIndex = -1;
+	
+	if(context[0] == '\0') {
+		if(CBaseEntity::m_iCurrentThinkContext < 0 || CBaseEntity::m_iCurrentThinkContext >= pEntity->GetAThinkFuncstions().Count()) {
+			return pContext->ThrowNativeError("Theres no current context");
+		} else {
+			iIndex = CBaseEntity::m_iCurrentThinkContext;
+		}
+	} else {
+		iIndex = pEntity->GetIndexForThinkContext(context);
+		if(iIndex == NO_THINK_CONTEXT) {
+			return pContext->ThrowNativeError("Invalid context %s", context);
+		}
+	}
+	
+	pEntity->SetNextThinkContext(sp_ctof(params[2]), iIndex);
+	return 0;
+}
+
 sp_nativeinfo_t natives[] =
 {
 	{"IEntityFactory.Custom.get", IEntityFactoryCustomget},
@@ -1674,12 +2083,26 @@ sp_nativeinfo_t natives[] =
 	{"CustomDatamap.from_classname", CustomDatamapfrom_classname},
 	{"CustomDatamap.from_factory", CustomDatamapfrom_factory},
 	{"CustomDatamap.add_prop", CustomDatamapadd_prop},
+	{"SetEntityContextThink", SetEntityContextThink},
+	{"SetEntityThink", SetEntityThink},
+	{"SetEntityNextThink", SetEntityNextThink},
+	{"SetEntityNextThinkContext", SetEntityNextThinkContext},
 	{NULL, NULL}
 };
 
 void Sample::OnPluginUnloaded(IPlugin *plugin)
 {
-	
+	callback_holder_map_t::iterator it{callbackmap.begin()};
+	while(it != callbackmap.end()) {
+		if(it->second->owner == plugin->GetIdentity()) {
+			it->second->erase = false;
+			callbackmap.erase(it);
+			it->second->dtor(it->second->pEntity_);
+			continue;
+		}
+		
+		++it;
+	}
 }
 
 void Sample::OnEntityDestroyed(CBaseEntity *pEntity)
@@ -1740,12 +2163,17 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 
 IGameConfig *g_pGameConf = nullptr;
 
+CDetour *pPhysicsRunSpecificThink = nullptr;
+
 bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 {
 	gameconfs->LoadGameConfigFile("datamaps", &g_pGameConf, error, maxlen);
 
 	g_pGameConf->GetOffset("CBaseEntity::PostConstructor", &CBaseEntityPostConstructor);
 
+	g_pGameConf->GetMemSig("SimThink_EntityChanged", &SimThink_EntityChangedPtr);
+	g_pGameConf->GetMemSig("AllocPooledString", &AllocPooledStringPtr);
+	
 	CDetourManager::Init(g_pSM->GetScriptingEngine(), g_pGameConf);
 	
 #ifdef SOURCEHOOK_BEING_STUPID
@@ -1754,6 +2182,9 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	pPvAllocEntPrivateData = DETOUR_CREATE_MEMBER(DetourPvAllocEntPrivateData, vtable[index])
 	pPvAllocEntPrivateData->EnableDetour();
 #endif
+	
+	pPhysicsRunSpecificThink = DETOUR_CREATE_MEMBER(PhysicsRunSpecificThink, "CBaseEntity::PhysicsRunSpecificThink")
+	pPhysicsRunSpecificThink->EnableDetour();
 	
 	g_pEntityList = reinterpret_cast<CBaseEntityList *>(gamehelpers->GetGlobalEntityList());
 	
@@ -1808,6 +2239,7 @@ void Sample::SDK_OnUnload()
 	if(pPvAllocEntPrivateData) {
 		pPvAllocEntPrivateData->Destroy();
 	}
+	pPhysicsRunSpecificThink->Destroy();
 	g_pSDKHooks->RemoveEntityListener(this);
 	plsys->RemovePluginsListener(this);
 	handlesys->RemoveType(factory_handle, myself->GetIdentity());
