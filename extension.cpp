@@ -254,10 +254,7 @@ struct callback_holder_t
 	callback_holder_t(CBaseEntity *pEntity, IdentityToken_t *owner_);
 	~callback_holder_t();
 	
-	void dtor(CBaseEntity *pEntity)
-	{
-		delete this;
-	}
+	void dtor(CBaseEntity *pEntity);
 
 	void HookEntityDtor()
 	{
@@ -504,6 +501,19 @@ public:
 		func->Execute(&res);
 	}
 };
+
+void callback_holder_t::dtor(CBaseEntity *pEntity)
+{
+	if(think.callback != nullptr) {
+		pEntity->SetThink(nullptr);
+	}
+	
+	for(auto &it : thinkctxs) {
+		pEntity->SetContextThink(nullptr, 0.0f, it.first.c_str());
+	}
+	
+	delete this;
+}
 
 int CBaseEntity::m_iCurrentThinkContext = -1;
 
