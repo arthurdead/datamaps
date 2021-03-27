@@ -31,15 +31,23 @@
 
 #define swap V_swap
 
+#if SOURCE_ENGINE == SE_TF2
+	#define TF_DLL
+	#define USES_ECON_ITEMS
+#elif SOURCE_ENGINE == SE_LEFT4DEAD2
+	#define TERROR
+	#define LEFT4DEAD
+	#define SWARM_DLL
+#endif
+
 #define BASEENTITY_H
 #define NEXT_BOT
 #define GLOWS_ENABLE
-#define TF_DLL
-#define USES_ECON_ITEMS
 #define USE_NAV_MESH
 #define RAD_TELEMETRY_DISABLED
 
 #include "extension.h"
+#include <ISDKTools.h>
 #include <CDetour/detours.h>
 #include <string>
 #include <vector>
@@ -50,6 +58,23 @@
 #include <eiface.h>
 #include <dt_common.h>
 #include <shareddefs.h>
+
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+class CFlaggedEntitiesEnum : public IPartitionEnumerator
+{
+public:
+	CFlaggedEntitiesEnum( CBaseEntity **pList, int listMax, int flagMask )
+	{}
+	
+	IterationRetval_t EnumElement( IHandleEntity *pHandleEntity )
+	{ return ITERATION_CONTINUE; }
+};
+#endif
+
+#ifndef FMTFUNCTION
+#define FMTFUNCTION(...)
+#endif
+
 #include <util.h>
 #include <eiface.h>
 #include <tier1/checksum_md5.h>
@@ -118,6 +143,32 @@ __attribute__((__visibility__("default"), __cdecl__)) double __acos_finite(doubl
 }
 }
 
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+char* AllocateStringHelper2( const char *pFormat, va_list marker )
+{
+	char str[512];
+	_vsnprintf( str, sizeof( str ), pFormat, marker );
+	str[ ARRAYSIZE(str) - 1 ] = 0;
+	
+	int len = strlen( str ) + 1;
+	char *pRet = new char[len];
+	memcpy( pRet, str, len );
+
+	return pRet;
+}
+
+
+char* AllocateStringHelper( const char *pFormat, ... )
+{
+	va_list marker;
+	va_start( marker, pFormat );
+	char *pRet = AllocateStringHelper2( pFormat, marker );
+	va_end( marker );
+
+	return pRet;
+}
+#endif
+
 /**
  * @file extension.cpp
  * @brief Implement extension code here.
@@ -132,6 +183,7 @@ int CBaseEntityPostConstructor = 0;
 CGlobalVars *gpGlobals = nullptr;
 CBaseEntityList *g_pEntityList = nullptr;
 ISDKHooks *g_pSDKHooks = nullptr;
+ISDKTools *g_pSDKTools = nullptr;
 IServerTools *servertools = nullptr;
 ServerClass *g_pServerClassHead = nullptr;
 ServerClass *g_pServerClassTail = nullptr;
@@ -139,6 +191,9 @@ INetworkStringTableContainer *netstringtables = NULL;
 INetworkStringTable *m_pInstanceBaselineTable = nullptr;
 IServer *server = nullptr;
 //IServerGameDLL *gamedll = nullptr;
+void *EntityFactoryDictionaryPtr = nullptr;
+void *CGlobalEntityListFindEntityByClassname = nullptr;
+void *UTIL_RemovePtr = nullptr;
 
 HandleType_t factory_handle = 0;
 HandleType_t datamap_handle = 0;
@@ -532,11 +587,29 @@ void SetEdictStateChanged(CBaseEntity *pEntity, int offset)
 	gamehelpers->SetEdictStateChanged(edict, offset);
 }
 
+CBaseEntity *FindEntityByClassname(CBaseEntity *pEntity, const std::string &name)
+{
+#if SOURCE_ENGINE == SE_TF2
+	return servertools->FindEntityByClassname(pEntity, name.c_str());
+#elif SOURCE_ENGINE == SE_LEFT4DEAD2
+	return call_mfunc<CBaseEntity *, CBaseEntityList, CBaseEntity *, const char *>(g_pEntityList, CGlobalEntityListFindEntityByClassname, pEntity, name.c_str());
+#endif
+}
+
+void RemoveEntity(CBaseEntity *pEntity)
+{
+#if SOURCE_ENGINE == SE_TF2
+	servertools->RemoveEntity(pEntity);
+#elif SOURCE_ENGINE == SE_LEFT4DEAD2
+	(void_to_func<void(*)(CBaseEntity *)>(UTIL_RemovePtr))(pEntity);
+#endif
+}
+
 void remove_all_entities(const std::string &name)
 {
 	CBaseEntity *pEntity = nullptr;
-	while(pEntity = servertools->FindEntityByClassname(pEntity, name.c_str())) {
-		servertools->RemoveEntity(pEntity);
+	while(pEntity = FindEntityByClassname(pEntity, name)) {
+		RemoveEntity(pEntity);
 	}
 }
 
@@ -544,7 +617,7 @@ template <typename T>
 void loop_all_entities(T func, const std::string &name)
 {
 	CBaseEntity *pEntity = nullptr;
-	while((pEntity = servertools->FindEntityByClassname(pEntity, name.c_str())) != nullptr) {
+	while((pEntity = FindEntityByClassname(pEntity, name)) != nullptr) {
 		func(pEntity);
 	}
 }
@@ -637,7 +710,37 @@ struct custom_typedescription_t : typedescription_t
 	{
 		//clear_name();
 	}
+	
+	void zero()
+	{
+#if SOURCE_ENGINE == SE_TF2
+		fieldOffset[TD_OFFSET_PACKED] = 0;
+#elif SOURCE_ENGINE == SE_LEFT4DEAD2
+		flatOffset[TD_OFFSET_NORMAL] = 0;
+		flatOffset[TD_OFFSET_PACKED] = 0;
+#endif
+		externalName = nullptr;
+		pSaveRestoreOps = nullptr;
+		inputFunc = nullptr;
+		td = nullptr;
+		override_field = nullptr;
+		override_count = 0;
+		fieldTolerance = 0.0f;
+	}
+	
+	int &get_offset()
+	{
+#if SOURCE_ENGINE == SE_TF2
+		return fieldOffset[TD_OFFSET_NORMAL];
+#elif SOURCE_ENGINE == SE_LEFT4DEAD2
+		return fieldOffset;
+#endif
+	}
 };
+
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+//TODO!!! m_pOptimizedDataMap
+#endif
 
 struct custom_datamap_t : datamap_t
 {
@@ -662,6 +765,18 @@ struct custom_datamap_t : datamap_t
 	~custom_datamap_t()
 	{
 		clear_name();
+	}
+	
+	void zero()
+	{
+#if SOURCE_ENGINE == SE_TF2
+		chains_validated = 0;
+		packed_offsets_computed = 0;
+		packed_size = 0;
+#elif SOURCE_ENGINE == SE_LEFT4DEAD2
+		m_nPackedSize = 0;
+		m_pOptimizedDataMap = nullptr;
+#endif
 	}
 };
 
@@ -693,29 +808,39 @@ struct custom_prop_info_t
 	void zero(CBaseEntity *pEntity)
 	{
 		for(custom_typedescription_t &desc : dataDesc) {
-			int offset = desc.fieldOffset[TD_OFFSET_NORMAL];
+			int offset = desc.get_offset();
 			switch(desc.fieldType) {
 				case FIELD_INTEGER: {
-					*(int *)(((unsigned char *)pEntity) + offset) = 0;
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						*(int *)(((unsigned char *)pEntity) + offset + (i * sizeof(int))) = 0;
+					}
 					break;
 				}
 				case FIELD_FLOAT: {
-					*(float *)(((unsigned char *)pEntity) + offset) = 0.0f;
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						*(float *)(((unsigned char *)pEntity) + offset + (i * sizeof(float))) = 0.0f;
+					}
 					break;
 				}
 				case FIELD_BOOLEAN: {
-					*(bool *)(((unsigned char *)pEntity) + offset) = false;
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						*(bool *)(((unsigned char *)pEntity) + offset + (i * sizeof(bool))) = false;
+					}
 					break;
 				}
 				case FIELD_EHANDLE: {
-					new ((EHANDLE *)(((unsigned char *)pEntity) + offset)) EHANDLE();
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						new ((EHANDLE *)(((unsigned char *)pEntity) + offset + (i * sizeof(EHANDLE)))) EHANDLE();
+					}
 					break;
 				}
 				case FIELD_VECTOR: {
-					vec3_t &vec = *(vec3_t *)(((unsigned char *)pEntity) + offset);
-					vec[0] = 0.0f;
-					vec[1] = 0.0f;
-					vec[2] = 0.0f;
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						vec3_t &vec = *(vec3_t *)(((unsigned char *)pEntity) + offset + (i * sizeof(vec3_t)));
+						vec[0] = 0.0f;
+						vec[1] = 0.0f;
+						vec[2] = 0.0f;
+					}
 					break;
 				}
 			}
@@ -725,7 +850,7 @@ struct custom_prop_info_t
 	void update_offsets()
 	{
 		for(custom_typedescription_t &desc : dataDesc) {
-			desc.fieldOffset[TD_OFFSET_NORMAL] += base;
+			desc.get_offset() += base;
 		}
 	}
 	
@@ -769,50 +894,43 @@ struct custom_prop_info_t
 		desc.set_name(name);
 		
 		desc.flags = FTYPEDESC_PRIVATE|FTYPEDESC_VIEW_NEVER;
-		desc.fieldOffset[TD_OFFSET_NORMAL] = size;
+		desc.get_offset() = size;
 		if(was_overriden && base != 0) {
-			desc.fieldOffset[TD_OFFSET_NORMAL] += base;
+			desc.get_offset() += base;
 		}
 		desc.fieldSize = 1;
 		
 		switch(type) {
 			case custom_prop_int: {
 				desc.fieldType = FIELD_INTEGER;
-				desc.fieldSizeInBytes = sizeof(int);
+				desc.fieldSizeInBytes = (sizeof(int) * desc.fieldSize);
 				break;
 			}
 			case custom_prop_float: {
 				desc.fieldType = FIELD_FLOAT;
-				desc.fieldSizeInBytes = sizeof(float);
+				desc.fieldSizeInBytes = (sizeof(float) * desc.fieldSize);
 				break;
 			}
 			case custom_prop_bool: {
 				desc.fieldType = FIELD_BOOLEAN;
-				desc.fieldSizeInBytes = sizeof(bool);
+				desc.fieldSizeInBytes = (sizeof(bool) * desc.fieldSize);
 				break;
 			}
 			case custom_prop_entity: {
 				desc.fieldType = FIELD_EHANDLE;
-				desc.fieldSizeInBytes = sizeof(EHANDLE);
+				desc.fieldSizeInBytes = (sizeof(EHANDLE) * desc.fieldSize);
 				break;
 			}
 			case custom_prop_vector: {
 				desc.fieldType = FIELD_VECTOR;
-				desc.fieldSizeInBytes = sizeof(vec3_t);
+				desc.fieldSizeInBytes = (sizeof(vec3_t) * desc.fieldSize);
 				break;
 			}
 		}
 		
 		size += desc.fieldSizeInBytes;
 		
-		desc.fieldOffset[TD_OFFSET_PACKED] = 0;
-		desc.externalName = nullptr;
-		desc.pSaveRestoreOps = nullptr;
-		desc.inputFunc = nullptr;
-		desc.td = nullptr;
-		desc.override_field = nullptr;
-		desc.override_count = 0;
-		desc.fieldTolerance = 0.0f;
+		desc.zero();
 		
 		map.dataDesc = (typedescription_t *)dataDesc.data();
 		++map.dataNumFields;
@@ -1235,6 +1353,8 @@ enum server_state_t : int;
 class CBaseServer : public IServer
 {
 public:
+	
+#if SOURCE_ENGINE == SE_TF2
 	server_state_t	m_State;		// some actions are only valid during load
 	int				m_Socket;		// network socket 
 	int				m_nTickCount;	// current server tick
@@ -1260,17 +1380,22 @@ public:
 
 	int			serverclasses;		// number of unique server classes
 	int			serverclassbits;	// log2 of serverclasses
+#endif
 	
 	void increment_svclasses()
 	{
+#if SOURCE_ENGINE == SE_TF2
 		++serverclasses;
 		serverclassbits = Q_log2( serverclasses ) + 1;
+#endif
 	}
 	
 	void decrement_svclasses()
 	{
+#if SOURCE_ENGINE == SE_TF2
 		--serverclasses;
 		serverclassbits = Q_log2( serverclasses ) + 1;
+#endif
 	}
 };
 
@@ -1490,9 +1615,7 @@ void *HookPvAllocEntPrivateData(long cb)
 custom_prop_info_t::custom_prop_info_t(IEntityFactory *fac_, std::string &&clsname_)
 	: fac{fac_}, clsname{std::move(clsname_)}
 {
-	map.chains_validated = 0;
-	map.packed_offsets_computed = 0;
-	map.packed_size = 0;
+	map.zero();
 	
 	if(CEntityFactoryDictionary::is_factory_custom(fac)) {
 		fac_is_sp = true;
@@ -2154,7 +2277,9 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	gpGlobals = ismm->GetCGlobals();
 	GET_V_IFACE_ANY(GetServerFactory, servertools, IServerTools, VSERVERTOOLS_INTERFACE_VERSION)
 	GET_V_IFACE_ANY(GetEngineFactory, engine, IVEngineServer, INTERFACEVERSION_VENGINESERVER)
+#if SOURCE_ENGINE == SE_TF2
 	dictionary = (CEntityFactoryDictionary *)servertools->GetEntityFactoryDictionary();
+#endif
 #ifndef SOURCEHOOK_BEING_STUPID
 	SH_ADD_HOOK(IVEngineServer, PvAllocEntPrivateData, engine, SH_STATIC(&HookPvAllocEntPrivateData), false);
 #endif
@@ -2167,7 +2292,9 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	}
 	custom_server_classid = g_pServerClassTail->m_ClassID;
 	m_pInstanceBaselineTable = netstringtables->FindTable(INSTANCE_BASELINE_TABLENAME);
+#if SOURCE_ENGINE == SE_TF2
 	server = engine->GetIServer();
+#endif
 	return true;
 }
 
@@ -2183,6 +2310,9 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 
 	g_pGameConf->GetMemSig("SimThink_EntityChanged", &SimThink_EntityChangedPtr);
 	g_pGameConf->GetMemSig("AllocPooledString", &AllocPooledStringPtr);
+	g_pGameConf->GetMemSig("EntityFactoryDictionary", &EntityFactoryDictionaryPtr);
+	g_pGameConf->GetMemSig("CGlobalEntityList::FindEntityByClassname", &CGlobalEntityListFindEntityByClassname);
+	g_pGameConf->GetMemSig("UTIL_Remove", &UTIL_RemovePtr);
 	
 	CDetourManager::Init(g_pSM->GetScriptingEngine(), g_pGameConf);
 	
@@ -2197,6 +2327,10 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	pPhysicsRunSpecificThink->EnableDetour();
 	
 	g_pEntityList = reinterpret_cast<CBaseEntityList *>(gamehelpers->GetGlobalEntityList());
+	
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+	dictionary = (void_to_func<CEntityFactoryDictionary *(*)()>(EntityFactoryDictionaryPtr))();
+#endif
 	
 	factory_handle = handlesys->CreateType("entity_factory", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
 	datamap_handle = handlesys->CreateType("datamap", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
@@ -2215,8 +2349,13 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 void Sample::SDK_OnAllLoaded()
 {
 	SM_GET_LATE_IFACE(SDKHOOKS, g_pSDKHooks);
-
+	SM_GET_LATE_IFACE(SDKTOOLS, g_pSDKTools);
+	
 	g_pSDKHooks->AddEntityListener(this);
+	
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+	server = g_pSDKTools->GetIServer();
+#endif
 	
 	sharesys->AddNatives(myself, natives);
 }
@@ -2224,6 +2363,7 @@ void Sample::SDK_OnAllLoaded()
 bool Sample::QueryRunning(char *error, size_t maxlength)
 {
 	SM_CHECK_IFACE(SDKHOOKS, g_pSDKHooks);
+	SM_CHECK_IFACE(SDKTOOLS, g_pSDKTools);
 	return true;
 }
 
@@ -2231,16 +2371,19 @@ bool Sample::QueryInterfaceDrop(SMInterface *pInterface)
 {
 	if(pInterface == g_pSDKHooks)
 		return false;
-
+	else if(pInterface == g_pSDKTools)
+		return false;
+	
 	return IExtensionInterface::QueryInterfaceDrop(pInterface);
 }
 
 void Sample::NotifyInterfaceDrop(SMInterface *pInterface)
 {
-	if(strcmp(pInterface->GetInterfaceName(), SMINTERFACE_SDKHOOKS_NAME) == 0)
-	{
+	if(strcmp(pInterface->GetInterfaceName(), SMINTERFACE_SDKHOOKS_NAME) == 0) {
 		g_pSDKHooks->RemoveEntityListener(this);
 		g_pSDKHooks = NULL;
+	} else if(strcmp(pInterface->GetInterfaceName(), SMINTERFACE_SDKTOOLS_NAME) == 0) {
+		g_pSDKTools = NULL;
 	}
 }
 

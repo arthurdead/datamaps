@@ -1,16 +1,30 @@
 "Games"
 {
-	"tf"
+	"#default"
 	{
-		"Offsets"
+		"#supported"
 		{
-			"CBaseEntity::PostConstructor"
-			{
-				"linux" "27"
-			}
+			"game"	"tf"
+			"game"	"left4dead2"
 		}
+
 		"Signatures"
 		{
+			"EntityFactoryDictionary"
+			{
+				"library" "server"
+				"linux" "@_Z23EntityFactoryDictionaryv"
+			}
+			"CGlobalEntityList::FindEntityByClassname"
+			{
+				"library"	"server"
+				"linux"		"@_ZN17CGlobalEntityList21FindEntityByClassnameEP11CBaseEntityPKc"
+			}
+			"UTIL_Remove"
+			{
+				"library"	"server"
+				"linux"		"@_Z11UTIL_RemoveP11CBaseEntity"
+			}
 			"SimThink_EntityChanged"
 			{
 				"library" "server"
@@ -25,6 +39,26 @@
 			{
 				"library" "server"
 				"linux" "@_ZN11CBaseEntity23PhysicsRunSpecificThinkEiMS_FvvE"
+			}
+		}
+	}
+	"left4dead2"
+	{
+		"Offsets"
+		{
+			"CBaseEntity::PostConstructor"
+			{
+				"linux" "30"
+			}
+		}
+	}
+	"tf"
+	{
+		"Offsets"
+		{
+			"CBaseEntity::PostConstructor"
+			{
+				"linux" "27"
 			}
 		}
 	}
