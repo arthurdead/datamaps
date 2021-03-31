@@ -59,18 +59,6 @@
 #include <dt_common.h>
 #include <shareddefs.h>
 
-#if SOURCE_ENGINE == SE_LEFT4DEAD2
-class CFlaggedEntitiesEnum : public IPartitionEnumerator
-{
-public:
-	CFlaggedEntitiesEnum( CBaseEntity **pList, int listMax, int flagMask )
-	{}
-	
-	IterationRetval_t EnumElement( IHandleEntity *pHandleEntity )
-	{ return ITERATION_CONTINUE; }
-};
-#endif
-
 #ifndef FMTFUNCTION
 #define FMTFUNCTION(...)
 #endif
@@ -1353,8 +1341,6 @@ enum server_state_t : int;
 class CBaseServer : public IServer
 {
 public:
-	
-#if SOURCE_ENGINE == SE_TF2
 	server_state_t	m_State;		// some actions are only valid during load
 	int				m_Socket;		// network socket 
 	int				m_nTickCount;	// current server tick
@@ -1380,22 +1366,17 @@ public:
 
 	int			serverclasses;		// number of unique server classes
 	int			serverclassbits;	// log2 of serverclasses
-#endif
 	
 	void increment_svclasses()
 	{
-#if SOURCE_ENGINE == SE_TF2
 		++serverclasses;
 		serverclassbits = Q_log2( serverclasses ) + 1;
-#endif
 	}
 	
 	void decrement_svclasses()
 	{
-#if SOURCE_ENGINE == SE_TF2
 		--serverclasses;
 		serverclassbits = Q_log2( serverclasses ) + 1;
-#endif
 	}
 };
 
