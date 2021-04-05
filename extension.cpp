@@ -69,6 +69,7 @@
 #include <iserver.h>
 #include "protocol.h"
 #include <tier1/utldict.h>
+#include <variant_t.h>
 
 using vec3_t = vec_t[3];
 using EHANDLE = CHandle<CBaseEntity>;
@@ -656,16 +657,7 @@ public:
 
 CEntityFactoryDictionary *dictionary = nullptr;
 
-enum custom_prop_type
-{
-	custom_prop_int,
-	custom_prop_float,
-	custom_prop_bool,
-	custom_prop_entity,
-	custom_prop_vector,
-};
-
-using custom_prop_t = std::pair<std::string, custom_prop_type>;
+using custom_prop_t = std::pair<std::string, fieldtype_t>;
 using custom_prop_vec_t = std::vector<custom_prop_t>;
 
 struct custom_typedescription_t : typedescription_t
@@ -793,26 +785,81 @@ struct custom_prop_info_t
 	custom_prop_info_t(IEntityFactory *fac_, std::string &&clsname_);
 	~custom_prop_info_t();
 	
+	void dtor(CBaseEntity *pEntity)
+	{
+		for(custom_typedescription_t &desc : dataDesc) {
+			int offset = desc.get_offset();
+			switch(desc.fieldType) {
+				case FIELD_EHANDLE: {
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						((EHANDLE *)(((unsigned char *)pEntity) + offset + (i * sizeof(EHANDLE))))->~EHANDLE();
+					}
+					break;
+				}
+				case FIELD_POSITION_VECTOR:
+				case FIELD_VECTOR: {
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						((Vector *)(((unsigned char *)pEntity) + offset + (i * sizeof(Vector))))->~Vector();
+					}
+					break;
+				}
+				case FIELD_VECTOR2D: {
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						((Vector2D *)(((unsigned char *)pEntity) + offset + (i * sizeof(Vector2D))))->~Vector2D();
+					}
+					break;
+				}
+				case FIELD_QUATERNION: {
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						((Quaternion *)(((unsigned char *)pEntity) + offset + (i * sizeof(Quaternion))))->~Quaternion();
+					}
+					break;
+				}
+				case FIELD_VMATRIX_WORLDSPACE:
+				case FIELD_VMATRIX: {
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						((VMatrix *)(((unsigned char *)pEntity) + offset + (i * sizeof(VMatrix))))->~VMatrix();
+					}
+					break;
+				}
+				case FIELD_MATRIX3X4_WORLDSPACE: {
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						((matrix3x4_t *)(((unsigned char *)pEntity) + offset + (i * sizeof(matrix3x4_t))))->~matrix3x4_t();
+					}
+					break;
+				}
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+				case FIELD_VECTOR4D: {
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						((Vector4D *)(((unsigned char *)pEntity) + offset + (i * sizeof(Vector4D))))->~Vector4D();
+					}
+					break;
+				}
+#endif
+				default: {
+					if(desc.fieldType == FIELD_CUSTOM && (desc.flags & FTYPEDESC_OUTPUT)) {
+						for(int i = 0; i < desc.fieldSize; ++i) {
+							((variant_t *)(((unsigned char *)pEntity) + offset + (i * sizeof(variant_t))))->~variant_t();
+						}
+					}
+					break;
+				}
+			}
+		}
+	}
+	
 	void zero(CBaseEntity *pEntity)
 	{
 		for(custom_typedescription_t &desc : dataDesc) {
 			int offset = desc.get_offset();
 			switch(desc.fieldType) {
-				case FIELD_INTEGER: {
+				case FIELD_COLOR32: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						*(int *)(((unsigned char *)pEntity) + offset + (i * sizeof(int))) = 0;
-					}
-					break;
-				}
-				case FIELD_FLOAT: {
-					for(int i = 0; i < desc.fieldSize; ++i) {
-						*(float *)(((unsigned char *)pEntity) + offset + (i * sizeof(float))) = 0.0f;
-					}
-					break;
-				}
-				case FIELD_BOOLEAN: {
-					for(int i = 0; i < desc.fieldSize; ++i) {
-						*(bool *)(((unsigned char *)pEntity) + offset + (i * sizeof(bool))) = false;
+						color32 &color = *(color32 *)(((unsigned char *)pEntity) + offset + (i * sizeof(color32)));
+						color.r = 255;
+						color.g = 255;
+						color.b = 255;
+						color.a = 255;
 					}
 					break;
 				}
@@ -822,12 +869,51 @@ struct custom_prop_info_t
 					}
 					break;
 				}
+				case FIELD_POSITION_VECTOR:
 				case FIELD_VECTOR: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						vec3_t &vec = *(vec3_t *)(((unsigned char *)pEntity) + offset + (i * sizeof(vec3_t)));
-						vec[0] = 0.0f;
-						vec[1] = 0.0f;
-						vec[2] = 0.0f;
+						new ((Vector *)(((unsigned char *)pEntity) + offset + (i * sizeof(Vector)))) Vector();
+					}
+					break;
+				}
+				case FIELD_VECTOR2D: {
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						new ((Vector2D *)(((unsigned char *)pEntity) + offset + (i * sizeof(Vector2D)))) Vector2D();
+					}
+					break;
+				}
+				case FIELD_QUATERNION: {
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						new ((Quaternion *)(((unsigned char *)pEntity) + offset + (i * sizeof(Quaternion)))) Quaternion();
+					}
+					break;
+				}
+				case FIELD_VMATRIX_WORLDSPACE:
+				case FIELD_VMATRIX: {
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						new ((VMatrix *)(((unsigned char *)pEntity) + offset + (i * sizeof(VMatrix)))) VMatrix();
+					}
+					break;
+				}
+				case FIELD_MATRIX3X4_WORLDSPACE: {
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						new ((matrix3x4_t *)(((unsigned char *)pEntity) + offset + (i * sizeof(matrix3x4_t)))) matrix3x4_t();
+					}
+					break;
+				}
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+				case FIELD_VECTOR4D: {
+					for(int i = 0; i < desc.fieldSize; ++i) {
+						new ((Vector4D *)(((unsigned char *)pEntity) + offset + (i * sizeof(Vector4D)))) Vector4D();
+					}
+					break;
+				}
+#endif
+				default: {
+					if(desc.fieldType == FIELD_CUSTOM && (desc.flags & FTYPEDESC_OUTPUT)) {
+						for(int i = 0; i < desc.fieldSize; ++i) {
+							new ((variant_t *)(((unsigned char *)pEntity) + offset + (i * sizeof(variant_t)))) variant_t();
+						}
 					}
 					break;
 				}
@@ -874,44 +960,60 @@ struct custom_prop_info_t
 		}
 	}
 	
-	void add_prop(const std::string &name, custom_prop_type type)
+	void add_prop(const std::string &name, fieldtype_t type, int num = 1, int flags = 0)
 	{
 		dataDesc.emplace_back();
 		custom_typedescription_t &desc = dataDesc.back();
 		
 		desc.set_name(name);
 		
-		desc.flags = FTYPEDESC_PRIVATE|FTYPEDESC_VIEW_NEVER;
 		desc.get_offset() = size;
 		if(was_overriden && base != 0) {
 			desc.get_offset() += base;
 		}
-		desc.fieldSize = 1;
+		desc.fieldSize = num;
 		
-		switch(type) {
-			case custom_prop_int: {
-				desc.fieldType = FIELD_INTEGER;
-				desc.fieldSizeInBytes = (sizeof(int) * desc.fieldSize);
-				break;
-			}
-			case custom_prop_float: {
-				desc.fieldType = FIELD_FLOAT;
-				desc.fieldSizeInBytes = (sizeof(float) * desc.fieldSize);
-				break;
-			}
-			case custom_prop_bool: {
-				desc.fieldType = FIELD_BOOLEAN;
-				desc.fieldSizeInBytes = (sizeof(bool) * desc.fieldSize);
-				break;
-			}
-			case custom_prop_entity: {
-				desc.fieldType = FIELD_EHANDLE;
-				desc.fieldSizeInBytes = (sizeof(EHANDLE) * desc.fieldSize);
-				break;
-			}
-			case custom_prop_vector: {
-				desc.fieldType = FIELD_VECTOR;
-				desc.fieldSizeInBytes = (sizeof(vec3_t) * desc.fieldSize);
+		desc.fieldType = type;
+		desc.flags = FTYPEDESC_PRIVATE|FTYPEDESC_VIEW_NEVER|flags;
+		if(desc.fieldType == FIELD_MODELINDEX) {
+			desc.flags |= FTYPEDESC_MODELINDEX;
+		}
+		
+		switch(desc.fieldType) {
+			case FIELD_FLOAT: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_FLOAT) * desc.fieldSize); break; }
+			case FIELD_STRING: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_STRING) * desc.fieldSize); break; }
+			case FIELD_VECTOR: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_VECTOR) * desc.fieldSize); break; }
+			case FIELD_VECTOR2D: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_VECTOR2D) * desc.fieldSize); break; }
+			case FIELD_QUATERNION: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_QUATERNION) * desc.fieldSize); break; }
+			case FIELD_INTEGER: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_INTEGER) * desc.fieldSize); break; }
+			case FIELD_BOOLEAN: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_BOOLEAN) * desc.fieldSize); break; }
+			case FIELD_SHORT: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_SHORT) * desc.fieldSize); break; }
+			case FIELD_CHARACTER: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_CHARACTER) * desc.fieldSize); break; }
+			case FIELD_COLOR32: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_COLOR32) * desc.fieldSize); break; }
+			case FIELD_CLASSPTR: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_CLASSPTR) * desc.fieldSize); break; }
+			case FIELD_EHANDLE: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_EHANDLE) * desc.fieldSize); break; }
+			case FIELD_EDICT: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_EDICT) * desc.fieldSize); break; }
+			case FIELD_POSITION_VECTOR: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_POSITION_VECTOR) * desc.fieldSize); break; }
+			case FIELD_TIME: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_TIME) * desc.fieldSize); break; }
+			case FIELD_TICK: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_TICK) * desc.fieldSize); break; }
+			case FIELD_MODELNAME: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_MODELNAME) * desc.fieldSize); break; }
+			case FIELD_SOUNDNAME: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_SOUNDNAME) * desc.fieldSize); break; }
+			case FIELD_INPUT: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_INPUT) * desc.fieldSize); break; }
+			case FIELD_FUNCTION: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_FUNCTION) * desc.fieldSize); break; }
+			case FIELD_VMATRIX: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_VMATRIX) * desc.fieldSize); break; }
+			case FIELD_VMATRIX_WORLDSPACE: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_VMATRIX_WORLDSPACE) * desc.fieldSize); break; }
+			case FIELD_MATRIX3X4_WORLDSPACE: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_MATRIX3X4_WORLDSPACE) * desc.fieldSize); break; }
+			case FIELD_INTERVAL: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_INTERVAL) * desc.fieldSize); break; }
+			case FIELD_MODELINDEX: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_MODELINDEX) * desc.fieldSize); break; }
+			case FIELD_MATERIALINDEX: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_MATERIALINDEX) * desc.fieldSize); break; }
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+			case FIELD_VECTOR4D: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_VECTOR4D) * desc.fieldSize); break; }
+			case FIELD_INTEGER64: { desc.fieldSizeInBytes = (FIELD_SIZE(FIELD_INTEGER64) * desc.fieldSize); break; }
+#endif
+			default: {
+				if(desc.fieldType == FIELD_CUSTOM && (desc.flags & FTYPEDESC_OUTPUT)) {
+					desc.fieldSizeInBytes = (sizeof(variant_t) * desc.fieldSize);
+				}
 				break;
 			}
 		}
@@ -932,6 +1034,7 @@ struct custom_prop_info_t
 	void HookEntityDtor()
 	{
 		CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
+		dtor(pEntity);
 		SH_REMOVE_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
 		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
 		RETURN_META(MRES_IGNORED);
@@ -1341,6 +1444,7 @@ enum server_state_t : int;
 class CBaseServer : public IServer
 {
 public:
+#if SOURCE_ENGINE == SE_TF2
 	server_state_t	m_State;		// some actions are only valid during load
 	int				m_Socket;		// network socket 
 	int				m_nTickCount;	// current server tick
@@ -1366,17 +1470,22 @@ public:
 
 	int			serverclasses;		// number of unique server classes
 	int			serverclassbits;	// log2 of serverclasses
+#endif
 	
 	void increment_svclasses()
 	{
+#if SOURCE_ENGINE == SE_TF2
 		++serverclasses;
 		serverclassbits = Q_log2( serverclasses ) + 1;
+#endif
 	}
 	
 	void decrement_svclasses()
 	{
+#if SOURCE_ENGINE == SE_TF2
 		--serverclasses;
 		serverclassbits = Q_log2( serverclasses ) + 1;
+#endif
 	}
 };
 
@@ -1828,7 +1937,51 @@ cell_t CustomDatamapadd_prop(IPluginContext *pContext, const cell_t *params)
 	char *name = nullptr;
 	pContext->LocalToString(params[2], &name);
 	
-	obj->add_prop(name, (custom_prop_type)params[3]);
+	fieldtype_t type = FIELD_VOID;
+	
+	enum custom_prop_type
+	{
+		custom_prop_int,
+		custom_prop_float,
+		custom_prop_bool,
+		custom_prop_ehandle,
+		custom_prop_vector,
+		custom_prop_string,
+		custom_prop_color32,
+		custom_prop_time,
+		custom_prop_tick,
+		custom_prop_short,
+		custom_prop_char,
+		custom_prop_modelname,
+		custom_prop_modelindex,
+		custom_prop_soundname,
+		custom_prop_variant,
+	};
+	
+	int flags = 0;
+	
+	switch((custom_prop_type)params[3]) {
+		case custom_prop_int: { type = FIELD_INTEGER; break; }
+		case custom_prop_float: { type = FIELD_FLOAT; break; }
+		case custom_prop_bool: { type = FIELD_BOOLEAN; break; }
+		case custom_prop_ehandle: { type = FIELD_EHANDLE; break; }
+		case custom_prop_vector: { type = FIELD_VECTOR; break; }
+		case custom_prop_string: { type = FIELD_STRING; break; }
+		case custom_prop_color32: { type = FIELD_COLOR32; break; }
+		case custom_prop_time: { type = FIELD_TIME; break; }
+		case custom_prop_tick: { type = FIELD_TICK; break; }
+		case custom_prop_short: { type = FIELD_SHORT; break; }
+		case custom_prop_char: { type = FIELD_CHARACTER; break; }
+		case custom_prop_modelname: { type = FIELD_MODELNAME; break; }
+		case custom_prop_modelindex: { type = FIELD_MODELINDEX; flags |= FTYPEDESC_MODELINDEX; break; }
+		case custom_prop_soundname: { type = FIELD_SOUNDNAME; break; }
+		case custom_prop_variant: { type = FIELD_CUSTOM; flags |= FTYPEDESC_OUTPUT; break; }
+		default: {
+			return pContext->ThrowNativeError("invalid type %i", params[3]);
+		}
+	}
+	
+	obj->add_prop(name, type, params[4], flags);
 	return 0;
 }
 

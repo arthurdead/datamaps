@@ -80,8 +80,18 @@ enum custom_prop_type
 	custom_prop_int,
 	custom_prop_float,
 	custom_prop_bool,
-	custom_prop_entity,
+	custom_prop_ehandle,
 	custom_prop_vector,
+	custom_prop_string,
+	custom_prop_color32,
+	custom_prop_time,
+	custom_prop_tick,
+	custom_prop_short,
+	custom_prop_char,
+	custom_prop_modelname,
+	custom_prop_modelindex,
+	custom_prop_soundname,
+	custom_prop_variant,
 };
 
 methodmap CustomDatamap < Handle
@@ -89,7 +99,7 @@ methodmap CustomDatamap < Handle
 	public static native CustomDatamap from_classname(const char[] classname);
 	public static native CustomDatamap from_factory(CustomEntityFactory fac);
 
-	public native void add_prop(const char[] name, custom_prop_type type);
+	public native void add_prop(const char[] name, custom_prop_type type, int num = 1);
 };
 
 native void SetEntityContextThink(int entity, datamaps_functions func, float time, const char[] context, any data = 0);
