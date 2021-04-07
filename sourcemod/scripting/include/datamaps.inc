@@ -58,21 +58,19 @@ methodmap EntityFactoryDictionary
 	public static native Handle remove(const char[] classname);
 };
 
-#define HIGH_DEFAULT -121121.121121
-
-#define SPROP_NOSCALE (1 << 2)
-
 methodmap CustomSendtable < Handle
 {
 	public static native CustomSendtable from_classname(const char[] classname, const char[] netname);
 	public static native CustomSendtable from_factory(CustomEntityFactory fac, const char[] netname);
 
 	public native void override_with(const char[] netname);
-	public native void override_with_ex(const char[] netname, const char[] dtname);
 	public native void unexclude_prop(const char[] dtname, const char[] name);
 	public native void set_base_class(const char[] netname);
 
-	public native void SendPropFloat(const char[] name, int nBits = 32, int flags = 0, float fLowValue = 0.0, float fHighValue = HIGH_DEFAULT);
+	public native void set_name(const char[] name);
+	public native void set_network_name(const char[] name);
+
+	public native void pop_base();
 };
 
 enum custom_prop_type
@@ -98,6 +96,8 @@ methodmap CustomDatamap < Handle
 {
 	public static native CustomDatamap from_classname(const char[] classname);
 	public static native CustomDatamap from_factory(CustomEntityFactory fac);
+
+	public native void set_name(const char[] name);
 
 	public native void add_prop(const char[] name, custom_prop_type type, int num = 1);
 };

@@ -179,6 +179,7 @@ ServerClass *g_pServerClassTail = nullptr;
 INetworkStringTableContainer *netstringtables = NULL;
 INetworkStringTable *m_pInstanceBaselineTable = nullptr;
 IServer *server = nullptr;
+ICvar *icvar = nullptr;
 //IServerGameDLL *gamedll = nullptr;
 void *EntityFactoryDictionaryPtr = nullptr;
 void *CGlobalEntityListFindEntityByClassname = nullptr;
@@ -781,6 +782,8 @@ struct custom_prop_info_t
 	IPluginContext *pContext = nullptr;
 	bool erase = true;
 	bool freehndl = true;
+	size_t counterid = 0;
+	std::string mapname{};
 	
 	custom_prop_info_t(IEntityFactory *fac_, std::string &&clsname_);
 	~custom_prop_info_t();
@@ -1047,6 +1050,8 @@ struct custom_prop_info_t
 
 SH_DECL_HOOK0(CBaseEntity, GetServerClass, SH_NOATTRIB, 0, ServerClass *);
 
+struct serverclass_override_t;
+
 class custom_ServerClass
 {
 public:
@@ -1085,6 +1090,8 @@ public:
 
 	// This is an index into the network string table (sv.GetInstanceBaselineTable()).
 	int							m_InstanceBaselineIndex; // INVALID_STRING_INDEX if not initialized yet.
+	
+	serverclass_override_t *owner = nullptr;
 };
 
 SendProp *UTIL_FindInSendTable(SendTable *pTable, const char *name, bool recursive, bool ignoreexclude)
@@ -1201,7 +1208,7 @@ struct unexclude_prop_t
 		
 	}
 	
-	~unexclude_prop_t()
+	void remove()
 	{
 		if(prop) {
 			prop->SetOffset(0);
@@ -1225,6 +1232,11 @@ struct unexclude_prop_t
 			prop->m_pVarName = m_pVarName;
 			prop->SetFlags(SPROP_EXCLUDE);
 		}
+	}
+	
+	~unexclude_prop_t()
+	{
+		
 	}
 	
 	const char *m_pExcludeDTName = nullptr;
@@ -1286,10 +1298,19 @@ struct serverclass_override_t
 	
 	void do_override(CBaseEntity *pEntity);
 	
+	void generate_class_id(bool baseline);
+	void remove_class_id();
+	void setbaseline(int id);
+	void remove_base_line();
+	void set_class_id(int id, bool baseline);
+	
 	void override_with(ServerClass *netclass);
-	void override_with(const std::string &netname, const std::string &dtname);
 	void set_base_class(SendTable *table);
 	void unexclude_prop(SendProp *prop, SendProp *realprop);
+	
+	void pop_base();
+	
+	static bool is_custom(ServerClass *pClass);
 	
 	IEntityFactory *fac = nullptr;
 	bool fac_is_sp = false;
@@ -1467,25 +1488,23 @@ public:
 	// This will get set to NET_MAX_PAYLOAD if the server is MP.
 	bf_write			m_Signon;
 	CUtlMemory<byte>	m_SignonBuffer;
-
+#elif SOURCE_ENGINE == SE_LEFT4DEAD2
+	char pad1[244];
+#endif
+	
 	int			serverclasses;		// number of unique server classes
 	int			serverclassbits;	// log2 of serverclasses
-#endif
 	
 	void increment_svclasses()
 	{
-#if SOURCE_ENGINE == SE_TF2
 		++serverclasses;
 		serverclassbits = Q_log2( serverclasses ) + 1;
-#endif
 	}
 	
 	void decrement_svclasses()
 	{
-#if SOURCE_ENGINE == SE_TF2
 		--serverclasses;
 		serverclassbits = Q_log2( serverclasses ) + 1;
-#endif
 	}
 };
 
@@ -1536,45 +1555,110 @@ void serverclass_override_t::set_base_class(SendTable *table2)
 
 size_t custom_server_classid = 0;
 
-void serverclass_override_t::override_with(const std::string &netname, const std::string &dtname)
+void serverclass_override_t::remove_class_id()
 {
-	fakecls = nullptr;
-	
-	tbl.set_name(dtname);
-	
-	if(!set_classid) {
-		++custom_server_classid;
+	if(set_classid) {
+		remove_base_line();
 		
-		set_classid = true;
-		
-		cls.m_ClassID = custom_server_classid;
+		--custom_server_classid;
+		set_classid = false;
 	}
 	
-	cls.set_name(netname);
+	cls.m_ClassID = -1;
+}
+
+void serverclass_override_t::generate_class_id(bool baseline)
+{
+	remove_class_id();
 	
+	++custom_server_classid;
+	set_classid = true;
+	
+	cls.m_ClassID = custom_server_classid;
+	if(baseline) {
+		setbaseline(custom_server_classid);
+	}
+}
+
+void serverclass_override_t::set_class_id(int id, bool baseline)
+{
+	remove_class_id();
+	
+	cls.m_ClassID = id;
+	if(baseline) {
+		setbaseline(id);
+	}
+}
+
+void serverclass_override_t::setbaseline(int id)
+{
 	char idString[32];
-	Q_snprintf(idString, sizeof(idString), "%d", cls.m_ClassID);
+	Q_snprintf(idString, sizeof(idString), "%d", id);
 
 	bool lock = engine->LockNetworkStringTables(true);
-	cls.m_InstanceBaselineIndex = m_pInstanceBaselineTable->AddString(true, idString, 0, nullptr);
+	cls.m_InstanceBaselineIndex = m_pInstanceBaselineTable->FindStringIndex(idString);
+	if(cls.m_InstanceBaselineIndex == INVALID_STRING_INDEX) {
+		static char dummy[1]{0};
+		cls.m_InstanceBaselineIndex = m_pInstanceBaselineTable->AddString(true, idString, sizeof(dummy), &dummy);
+	}
 	engine->LockNetworkStringTables(lock);
+}
+
+void serverclass_override_t::remove_base_line()
+{
+	if(cls.m_InstanceBaselineIndex == INVALID_STRING_INDEX) {
+		return;
+	}
+	
+	bool lock = engine->LockNetworkStringTables(true);
+	//m_pInstanceBaselineTable->RemoveString;
+	engine->LockNetworkStringTables(lock);
+	
+	cls.m_InstanceBaselineIndex = INVALID_STRING_INDEX;
 }
 
 void serverclass_override_t::override_with(ServerClass *netclass)
 {
 	fakecls = netclass;
 	
-	if(set_classid) {
-		--custom_server_classid;
-		set_classid = false;
+	set_class_id(fakecls->m_ClassID, false);
+}
+
+void serverclass_override_t::pop_base()
+{
+	SendTable *currbase = props[0].GetDataTable();
+	
+	for(int i = 0; i < currbase->GetNumProps(); ++i) {
+		SendProp *pProp = currbase->GetProp(i);
+		
+		if(stricmp(pProp->GetName(), "baseclass") == 0) {
+			currbase = pProp->GetDataTable();
+			break;
+		}
 	}
 	
-	tbl.set_name(fakecls->m_pTable->m_pNetTableName);
+	props[0].SetDataTable(currbase);
+}
+
+size_t classoverridecounter = 0;
+
+#define MAGIC_OFFSET 69
+
+bool serverclass_override_t::is_custom(ServerClass *pClass)
+{
+	SendTable *table = pClass->m_pTable;
 	
-	cls.set_name(fakecls->m_pNetworkName);
+	for(int i = 0; i < table->GetNumProps(); ++i) {
+		SendProp *pProp = table->GetProp(i);
+		
+		if(stricmp(pProp->GetName(), "baseclass") == 0) {
+			if(pProp->GetOffset() == MAGIC_OFFSET) {
+				return true;
+			}
+		}
+	}
 	
-	cls.m_ClassID = fakecls->m_ClassID;
-	cls.m_InstanceBaselineIndex = fakecls->m_InstanceBaselineIndex;
+	return false;
 }
 
 serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_)
@@ -1594,20 +1678,28 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	SendProp *prop = &props.back();
 	prop->m_Type = DPT_DataTable;
 	prop->m_pVarName = "baseclass";
-	prop->SetOffset(0);
+	prop->SetOffset(MAGIC_OFFSET);
 	prop->SetDataTable(realcls->m_pTable);
 	prop->SetDataTableProxyFn(SendProxy_DataTableToDataTable);
 	prop->SetFlags(SPROP_PROXY_ALWAYS_YES|SPROP_COLLAPSIBLE);
 	
 	tbl.m_pProps = props.data();
 	tbl.m_nProps = props.size();
-	tbl.set_name(realcls->m_pTable->m_pNetTableName);
+	std::string tablename{realcls->m_pTable->m_pNetTableName};
+	tablename += "_custom_";
+	tablename += std::to_string(classoverridecounter);
+	tbl.set_name(tablename);
 	tbl.m_pPrecalc = realcls->m_pTable->m_pPrecalc;
+	
+	cls.owner = this;
 	
 	cls.m_pTable = &tbl;
 	
 	cls.m_ClassID = realcls->m_ClassID;
-	cls.set_name(realcls->m_pNetworkName);
+	std::string netname{realcls->m_pNetworkName};
+	netname += "_custom_";
+	netname += std::to_string(classoverridecounter);
+	cls.set_name(netname);
 	cls.m_InstanceBaselineIndex = realcls->m_InstanceBaselineIndex;
 	
 	cls.m_pNext = nullptr;
@@ -1621,12 +1713,16 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	}
 	
 	((CBaseServer *)server)->increment_svclasses();
+	
+	++classoverridecounter;
 }
 
 extern void remove_serverclass_from_sm_cache(ServerClass *pMap);
 
 serverclass_override_t::~serverclass_override_t()
 {
+	--classoverridecounter;
+	
 	if(erase) {
 		server_map.erase(clsname);
 	}
@@ -1647,10 +1743,11 @@ serverclass_override_t::~serverclass_override_t()
 		g_pServerClassTail->m_pNext = nullptr;
 	}
 	
-	if(set_classid) {
-		--custom_server_classid;
-	}
+	remove_class_id();
 	
+	for(auto &it : exclude_props) {
+		it.remove();
+	}
 	exclude_props.clear();
 	
 	if(base_class_set) {
@@ -1702,6 +1799,8 @@ void *HookPvAllocEntPrivateData(long cb)
 	RETURN_META_VALUE(MRES_SUPERCEDE, DoPvAllocEntPrivateData(cb));
 }
 
+size_t datamapoverridecounter = 0;
+
 custom_prop_info_t::custom_prop_info_t(IEntityFactory *fac_, std::string &&clsname_)
 	: fac{fac_}, clsname{std::move(clsname_)}
 {
@@ -1716,12 +1815,16 @@ custom_prop_info_t::custom_prop_info_t(IEntityFactory *fac_, std::string &&clsna
 	}
 	
 	info_map[clsname] = this;
+	
+	counterid = datamapoverridecounter++;
 }
 
 extern void remove_datamap_from_sm_cache(datamap_t *pMap);
 
 custom_prop_info_t::~custom_prop_info_t()
 {
+	--datamapoverridecounter;
+	
 	if(erase) {
 		info_map.erase(clsname);
 	}
@@ -1761,8 +1864,11 @@ void custom_prop_info_t::do_override(CBaseEntity *pEntity)
 		datamap_t *basemap = gamehelpers->GetDataMap(pEntity);
 		ServerClass *svcls = pEntity->GetServerClass();
 		
-		std::string mapname{svcls->GetName()};
-		mapname += "_custom";
+		if(mapname.empty()) {
+			mapname = svcls->GetName();
+			mapname += "_custom_";
+			mapname += std::to_string(counterid);
+		}
 		map.set_name(mapname);
 		map.baseMap = basemap;
 		
@@ -1985,6 +2091,27 @@ cell_t CustomDatamapadd_prop(IPluginContext *pContext, const cell_t *params)
 	return 0;
 }
 
+cell_t CustomDatamapset_name(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	custom_prop_info_t *obj = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], datamap_handle, &security, (void **)&obj);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	char *name = nullptr;
+	pContext->LocalToString(params[2], &name);
+	
+	std::string namestr{name};
+	
+	obj->map.set_name(namestr);
+	obj->mapname = std::move(namestr);
+	return 0;
+}
+
 cell_t CustomDatamapfrom_classname(IPluginContext *pContext, const cell_t *params)
 {
 	char *name = nullptr;
@@ -2103,6 +2230,57 @@ cell_t CustomSendtableset_base_class(IPluginContext *pContext, const cell_t *par
 	return 0;
 }
 
+cell_t CustomSendtableset_name(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	serverclass_override_t *factory = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	char *name = nullptr;
+	pContext->LocalToString(params[2], &name);
+
+	factory->tbl.set_name(name);
+	return 0;
+}
+
+cell_t CustomSendtableset_network_name(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	serverclass_override_t *factory = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	char *name = nullptr;
+	pContext->LocalToString(params[2], &name);
+
+	factory->cls.set_name(name);
+	return 0;
+}
+
+cell_t CustomSendtablepop_base(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	serverclass_override_t *factory = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	factory->pop_base();
+	return 0;
+}
+
 cell_t CustomSendtableoverride_with(IPluginContext *pContext, const cell_t *params)
 {
 	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
@@ -2127,31 +2305,6 @@ cell_t CustomSendtableoverride_with(IPluginContext *pContext, const cell_t *para
 	}
 	
 	factory->override_with(netclass);
-	return 0;
-}
-
-cell_t CustomSendtableoverride_with_ex(IPluginContext *pContext, const cell_t *params)
-{
-	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
-	
-	serverclass_override_t *factory = nullptr;
-	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
-	if(err != HandleError_None)
-	{
-		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
-	}
-	
-	if(factory->set_classid || factory->fakecls != nullptr) {
-		return pContext->ThrowNativeError("already has been overriden");
-	}
-	
-	char *netname = nullptr;
-	pContext->LocalToString(params[2], &netname);
-	
-	char *dtname = nullptr;
-	pContext->LocalToString(params[3], &dtname);
-	
-	factory->override_with(netname, dtname);
 	return 0;
 }
 
@@ -2344,12 +2497,15 @@ sp_nativeinfo_t natives[] =
 	{"CustomSendtable.from_factory", CustomSendtablefrom_factory},
 	{"CustomSendtable.from_classname", CustomSendtablefrom_classname},
 	{"CustomSendtable.override_with", CustomSendtableoverride_with},
-	{"CustomSendtable.override_with_ex", CustomSendtableoverride_with_ex},
 	{"CustomSendtable.unexclude_prop", CustomSendtableunexclude_prop},
 	{"CustomSendtable.set_base_class", CustomSendtableset_base_class},
+	{"CustomSendtable.set_name", CustomSendtableset_name},
+	{"CustomSendtable.set_network_name", CustomSendtableset_network_name},
+	{"CustomSendtable.pop_base", CustomSendtablepop_base},
 	{"CustomDatamap.from_classname", CustomDatamapfrom_classname},
 	{"CustomDatamap.from_factory", CustomDatamapfrom_factory},
 	{"CustomDatamap.add_prop", CustomDatamapadd_prop},
+	{"CustomDatamap.set_name", CustomDatamapset_name},
 	{"SetEntityContextThink", SetEntityContextThink},
 	{"SetEntityThink", SetEntityThink},
 	{"SetEntityNextThink", SetEntityNextThink},
@@ -2406,6 +2562,41 @@ DETOUR_DECL_MEMBER1(DetourPvAllocEntPrivateData, void *, long, cb)
 
 #define SOURCEHOOK_BEING_STUPID
 
+CDetour *pError = nullptr;
+
+DETOUR_DECL_STATIC2(DetourError, void, const char *, format, ..., )
+{
+	static char buffer[2048];
+	va_list args;
+	va_start(args, format);
+	int len = vsprintf(buffer, format, args);
+	va_end(args);
+	
+	if(strstr(buffer, "SendTable_CalcDelta")) {
+		static float lastprint = 0.0f;
+		if(lastprint <= gpGlobals->curtime) {
+			buffer[len] = '\n';
+			buffer[len+1] = '\0';
+			Warning(buffer);
+			lastprint = gpGlobals->curtime + 2.0f;
+		}
+	} else {
+		DETOUR_STATIC_CALL(DetourError)(buffer);
+	}
+}
+
+std::unordered_map<int, ServerClass *> baselinemap{};
+
+void BaselineChanged(void *object, INetworkStringTable *stringTable, int stringNumber, const char *newString, const void *newData)
+{
+	
+}
+
+DETOUR_DECL_STATIC4(DetourSV_EnsureInstanceBaseline, void, ServerClass *, pServerClass, int, iEdict, const void *, pData, int, nBytes)
+{
+	DETOUR_STATIC_CALL(DetourSV_EnsureInstanceBaseline)(pServerClass, iEdict, pData, nBytes);
+}
+
 bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool late)
 {
 	gpGlobals = ismm->GetCGlobals();
@@ -2421,20 +2612,44 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	GET_V_IFACE_ANY(GetEngineFactory, netstringtables, INetworkStringTableContainer, INTERFACENAME_NETWORKSTRINGTABLESERVER)
 	g_pServerClassHead = gamedll->GetAllServerClasses();
 	g_pServerClassTail = g_pServerClassHead;
-	while(g_pServerClassTail && g_pServerClassTail->m_pNext) {
+	while(true) {
+		baselinemap[g_pServerClassTail->m_ClassID] = g_pServerClassTail;
+		
+		if(!g_pServerClassTail->m_pNext) {
+			break;
+		}
+		
 		g_pServerClassTail = g_pServerClassTail->m_pNext;
 	}
 	custom_server_classid = g_pServerClassTail->m_ClassID;
 	m_pInstanceBaselineTable = netstringtables->FindTable(INSTANCE_BASELINE_TABLENAME);
+	m_pInstanceBaselineTable->SetStringChangedCallback(nullptr, BaselineChanged);
 #if SOURCE_ENGINE == SE_TF2
 	server = engine->GetIServer();
 #endif
+	GET_V_IFACE_CURRENT(GetEngineFactory, icvar, ICvar, CVAR_INTERFACE_VERSION);
+	g_pCVar = icvar;
+	ConVar_Register(0, this);
+	
+	ConVar *sv_instancebaselines = g_pCVar->FindVar("sv_instancebaselines");
+	//sv_instancebaselines->SetValue(true);
+	ConVar *sv_sendtables = g_pCVar->FindVar("sv_sendtables");
+	//sv_sendtables->SetValue(false);
+
+	return true;
+}
+
+bool Sample::RegisterConCommandBase(ConCommandBase *pCommand)
+{
+	META_REGCVAR(pCommand);
 	return true;
 }
 
 IGameConfig *g_pGameConf = nullptr;
 
 CDetour *pPhysicsRunSpecificThink = nullptr;
+
+CDetour *pSV_EnsureInstanceBaseline = nullptr;
 
 bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 {
@@ -2449,6 +2664,12 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	g_pGameConf->GetMemSig("UTIL_Remove", &UTIL_RemovePtr);
 	
 	CDetourManager::Init(g_pSM->GetScriptingEngine(), g_pGameConf);
+	
+	pError = DETOUR_CREATE_STATIC(DetourError, (void *)Error)
+	pError->EnableDetour();
+	
+	pSV_EnsureInstanceBaseline = DETOUR_CREATE_STATIC(DetourSV_EnsureInstanceBaseline, "SV_EnsureInstanceBaseline")
+	pSV_EnsureInstanceBaseline->EnableDetour();
 	
 #ifdef SOURCEHOOK_BEING_STUPID
 	void **vtable = *(void ***)engine;
@@ -2534,4 +2755,730 @@ void Sample::SDK_OnUnload()
 	handlesys->RemoveType(removal_handle, myself->GetIdentity());
 	handlesys->RemoveType(serverclass_handle, myself->GetIdentity());
 	gameconfs->CloseGameConfigFile(g_pGameConf);
+}
+
+CON_COMMAND(dump_baselinemap, "")
+{
+	for(auto &it : baselinemap) {
+		META_CONPRINTF("%i - %s\n", it.first, it.second->GetName());
+	}
+}
+
+CON_COMMAND(dump_baseline, "")
+{
+	for(int i = 0; i < m_pInstanceBaselineTable->GetNumStrings(); ++i) {
+		const char *str = m_pInstanceBaselineTable->GetString(i);
+		int id = V_atoi(str);
+		META_CONPRINTF("%i = %s = %s\n", i, str, baselinemap[id]->GetName());
+	}
+}
+
+CON_COMMAND(dump_serverclasses, "Dumps the class list as a text file")
+{
+	if (args.ArgC() < 2)
+	{
+		META_CONPRINT("Usage: dump_serverclasses <file>\n");
+		return;
+	}
+
+	const char *file = args.Arg(1);
+	if (!file || file[0] == '\0')
+	{
+		META_CONPRINT("Usage: dump_serverclasses <file>\n");
+		return;
+	}
+
+	char path[PLATFORM_MAX_PATH];
+	g_pSM->BuildPath(Path_Game, path, sizeof(path), "%s", file);
+
+	FILE *fp = NULL;
+	if ((fp = fopen(path, "wt")) == NULL)
+	{
+		META_CONPRINTF("Could not open file \"%s\"\n", path);
+		return;
+	}
+
+	char buffer[80];
+	buffer[0] = 0;
+
+	time_t t = g_pSM->GetAdjustedTime();
+	size_t written = 0;
+	{
+#ifdef PLATFORM_WINDOWS
+		InvalidParameterHandler p;
+#endif
+		written = strftime(buffer, sizeof(buffer), "%Y/%m/%d", localtime(&t));
+	}
+
+	fprintf(fp, "// Dump of all server classes for \"%s\" as at %s\n//\n\n", g_pSM->GetGameFolderName(), buffer);
+
+	ServerClass *pClass = g_pServerClassHead;
+	while(pClass) {
+		fprintf(fp,"%s\n",pClass->GetName(), pClass->m_ClassID);
+		fprintf(fp,"  ClassID: %i (%s)\n", pClass->m_ClassID, baselinemap[pClass->m_ClassID]->GetName());
+		if(pClass->m_InstanceBaselineIndex == INVALID_STRING_INDEX) {
+			fprintf(fp,"  InstanceBaselineIndex: INVALID_STRING_INDEX\n");
+			fprintf(fp,"  BaselineIndex String: NULL\n");
+		} else {
+			const char *str = m_pInstanceBaselineTable->GetString(pClass->m_InstanceBaselineIndex);
+			int id = V_atoi(str);
+			fprintf(fp,"  InstanceBaselineIndex: %i\n", pClass->m_InstanceBaselineIndex);
+			fprintf(fp,"  BaselineIndex String: %s (%s)\n", str, baselinemap[id]->GetName());
+		}
+		pClass = pClass->m_pNext;
+	}
+
+	fclose(fp);
+
+}
+
+CON_COMMAND(dump_classes, "Dumps the class list as a text file")
+{
+	if (args.ArgC() < 2)
+	{
+		META_CONPRINT("Usage: dump_classes <file>\n");
+		return;
+	}
+
+	const char *file = args.Arg(1);
+	if (!file || file[0] == '\0')
+	{
+		META_CONPRINT("Usage: dump_classes <file>\n");
+		return;
+	}
+
+	char path[PLATFORM_MAX_PATH];
+	g_pSM->BuildPath(Path_Game, path, sizeof(path), "%s", file);
+
+	FILE *fp = NULL;
+	if ((fp = fopen(path, "wt")) == NULL)
+	{
+		META_CONPRINTF("Could not open file \"%s\"\n", path);
+		return;
+	}
+
+	char buffer[80];
+	buffer[0] = 0;
+
+	time_t t = g_pSM->GetAdjustedTime();
+	size_t written = 0;
+	{
+#ifdef PLATFORM_WINDOWS
+		InvalidParameterHandler p;
+#endif
+		written = strftime(buffer, sizeof(buffer), "%Y/%m/%d", localtime(&t));
+	}
+
+	fprintf(fp, "// Dump of all classes for \"%s\" as at %s\n//\n\n", g_pSM->GetGameFolderName(), buffer);
+
+	sm_datatable_info_t info;
+	for ( int i = dictionary->m_Factories.First(); i != dictionary->m_Factories.InvalidIndex(); i = dictionary->m_Factories.Next( i ) )
+	{
+		IServerNetworkable *entity = dictionary->Create(dictionary->m_Factories.GetElementName(i));
+		ServerClass *sclass = entity->GetServerClass();
+		fprintf(fp,"%s - %s\n",sclass->GetName(), dictionary->m_Factories.GetElementName(i));
+		
+		if (!gamehelpers->FindDataMapInfo(gamehelpers->GetDataMap(entity->GetBaseEntity()), "m_iEFlags", &info))
+			continue;
+		
+		int *eflags = (int *)((char *)entity->GetBaseEntity() + info.actual_offset);
+		*eflags |= (1<<0); // EFL_KILLME
+	}
+
+	fclose(fp);
+
+}
+
+char *UTIL_SendFlagsToString(int flags, int type)
+{
+	static char str[1024];
+	str[0] = 0;
+
+	if (flags & SPROP_UNSIGNED)
+	{
+		strcat(str, "Unsigned|");
+	}
+	if (flags & SPROP_COORD)
+	{
+		strcat(str, "Coord|");
+	}
+	if (flags & SPROP_NOSCALE)
+	{
+		strcat(str, "NoScale|");
+	}
+	if (flags & SPROP_ROUNDDOWN)
+	{
+		strcat(str, "RoundDown|");
+	}
+	if (flags & SPROP_ROUNDUP)
+	{
+		strcat(str, "RoundUp|");
+	}
+	if (flags & SPROP_NORMAL)
+	{
+		if (type == DPT_Int)
+		{
+			strcat(str, "VarInt|");
+		}
+		else
+		{
+			strcat(str, "Normal|");
+		}
+	}
+	if (flags & SPROP_EXCLUDE)
+	{
+		strcat(str, "Exclude|");
+	}
+	if (flags & SPROP_XYZE)
+	{
+		strcat(str, "XYZE|");
+	}
+	if (flags & SPROP_INSIDEARRAY)
+	{
+		strcat(str, "InsideArray|");
+	}
+	if (flags & SPROP_PROXY_ALWAYS_YES)
+	{
+		strcat(str, "AlwaysProxy|");
+	}
+	if (flags & SPROP_CHANGES_OFTEN)
+	{
+		strcat(str, "ChangesOften|");
+	}
+	if (flags & SPROP_IS_A_VECTOR_ELEM)
+	{
+		strcat(str, "VectorElem|");
+	}
+	if (flags & SPROP_COLLAPSIBLE)
+	{
+		strcat(str, "Collapsible|");
+	}
+	if (flags & SPROP_COORD_MP)
+	{
+		strcat(str, "CoordMP|");
+	}
+	if (flags & SPROP_COORD_MP_LOWPRECISION)
+	{
+		strcat(str, "CoordMPLowPrec|");
+	}
+	if (flags & SPROP_COORD_MP_INTEGRAL)
+	{
+		strcat(str, "CoordMpIntegral|");
+	}
+
+	int len = strlen(str) - 1;
+	if (len > 0)
+	{
+		str[len] = 0; // Strip the final '|'
+	}
+
+	return str;
+}
+
+const char *GetDTTypeName(int type)
+{
+	switch (type)
+	{
+	case DPT_Int:
+		{
+			return "integer";
+		}
+	case DPT_Float:
+		{
+			return "float";
+		}
+	case DPT_Vector:
+		{
+			return "vector";
+		}
+	case DPT_String:
+		{
+			return "string";
+		}
+	case DPT_Array:
+		{
+			return "array";
+		}
+	case DPT_DataTable:
+		{
+			return "datatable";
+		}
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+	case DPT_Int64:
+		{
+			return "int64";
+		}
+#endif
+	default:
+		{
+			return NULL;
+		}
+	}
+
+	return NULL;
+}
+
+#include <stack>
+
+const char *GetPropDatatableType(SendProp *pProp)
+{
+	return pProp->GetDataTable()->GetName();
+}
+
+void UTIL_DrawSendTable(FILE *fp, SendTable *pTable, int level = 1)
+{
+	SendProp *pProp;
+	const char *type;
+	
+	std::stack<SendProp *> printlater{};
+
+	for (int i = 0; i < pTable->GetNumProps(); i++)
+	{
+		pProp = pTable->GetProp(i);
+		if (!pProp->GetDataTable())
+		{
+			type = GetDTTypeName(pProp->GetType());
+
+			if (type != NULL)
+			{
+				fprintf(fp,
+					"%*sMember: %s (offset %d) (type %s) (bits %d) (%s)\n", 
+					level, "", 
+					pProp->GetName(),
+					pProp->GetOffset(),
+					type,
+					pProp->m_nBits,
+					UTIL_SendFlagsToString(pProp->GetFlags(), pProp->GetType()));
+			}
+			else
+			{
+				fprintf(fp,
+					"%*sMember: %s (offset %d) (type %d) (bits %d) (%s)\n", 
+					level, "", 
+					pProp->GetName(),
+					pProp->GetOffset(),
+					pProp->GetType(),
+					pProp->m_nBits,
+					UTIL_SendFlagsToString(pProp->GetFlags(), pProp->GetType()));
+			}
+		}
+		else
+		{
+			printlater.emplace(pProp);
+		}
+	}
+	
+	while(!printlater.empty()) {
+		pProp = printlater.top();
+		printlater.pop();
+		
+		if(stricmp(pProp->GetName(), "baseclass") == 0) {
+			fprintf(fp, "%*sBase Table: %s\n", 
+				level, "", 
+				pProp->GetDataTable()->GetName(), 
+				pProp->GetOffset());
+		} else {
+			fprintf(fp, "%*sSub-Class Table: %s (offset %d) (type %s)\n", 
+				level, "", 
+				pProp->GetName(), 
+				pProp->GetOffset(), 
+				GetPropDatatableType(pProp));
+		}
+		
+		UTIL_DrawSendTable(fp, pProp->GetDataTable(), level + 1);
+	}
+}
+
+CON_COMMAND(dump_netprops_inv, "Dumps the networkable property table as a text file")
+{
+	if (args.ArgC() < 2)
+	{
+		META_CONPRINT("Usage: dump_netprops_inv <file>\n");
+		return;
+	}
+
+	const char *file = args.Arg(1);
+	if (!file || file[0] == '\0')
+	{
+		META_CONPRINT("Usage: dump_netprops_inv <file>\n");
+		return;
+	}
+
+	char path[PLATFORM_MAX_PATH];
+	g_pSM->BuildPath(Path_Game, path, sizeof(path), "%s", file);
+
+	FILE *fp = NULL;
+	if ((fp = fopen(path, "wt")) == NULL)
+	{
+		META_CONPRINTF("Could not open file \"%s\"\n", path);
+		return;
+	}
+	
+	char buffer[80];
+	buffer[0] = 0;
+
+	time_t t = g_pSM->GetAdjustedTime();
+	size_t written = 0;
+	{
+#ifdef PLATFORM_WINDOWS
+		InvalidParameterHandler p;
+#endif
+		written = strftime(buffer, sizeof(buffer), "%Y/%m/%d", localtime(&t));
+	}
+
+	fprintf(fp, "// Dump of all network properties for \"%s\" as at %s\n//\n\n", g_pSM->GetGameFolderName(), buffer);
+
+	ServerClass *pBase = gamedll->GetAllServerClasses();
+	while (pBase != NULL)
+	{
+		fprintf(fp, "%s (type %s)\n", pBase->GetName(), pBase->m_pTable->GetName());
+		UTIL_DrawSendTable(fp, pBase->m_pTable);
+		pBase = pBase->m_pNext;
+	}
+
+	fclose(fp);
+}
+
+CON_COMMAND(dump_netprops_cls, "Dumps the networkable property table as a text file")
+{
+	if (args.ArgC() < 3)
+	{
+		META_CONPRINT("Usage: dump_netprops_cls <cls> <file>\n");
+		return;
+	}
+
+	const char *cls = args.Arg(1);
+	if (!cls || cls[0] == '\0')
+	{
+		META_CONPRINT("Usage: dump_netprops_cls <cls> <file>\n");
+		return;
+	}
+	
+	const char *file = args.Arg(2);
+	if (!file || file[0] == '\0')
+	{
+		META_CONPRINT("Usage: dump_netprops_cls <cls> <file>\n");
+		return;
+	}
+
+	char path[PLATFORM_MAX_PATH];
+	g_pSM->BuildPath(Path_Game, path, sizeof(path), "%s", file);
+
+	FILE *fp = NULL;
+	if ((fp = fopen(path, "wt")) == NULL)
+	{
+		META_CONPRINTF("Could not open file \"%s\"\n", path);
+		return;
+	}
+	
+	char buffer[80];
+	buffer[0] = 0;
+
+	time_t t = g_pSM->GetAdjustedTime();
+	size_t written = 0;
+	{
+#ifdef PLATFORM_WINDOWS
+		InvalidParameterHandler p;
+#endif
+		written = strftime(buffer, sizeof(buffer), "%Y/%m/%d", localtime(&t));
+	}
+
+	fprintf(fp, "// Dump of %s network properties for \"%s\" as at %s\n//\n\n", cls, g_pSM->GetGameFolderName(), buffer);
+
+	ServerClass *pBase = gamedll->GetAllServerClasses();
+	while (pBase != NULL)
+	{
+		if(stricmp(pBase->GetName(), cls) == 0) {
+			fprintf(fp, "%s (type %s)\n", pBase->GetName(), pBase->m_pTable->GetName());
+			UTIL_DrawSendTable(fp, pBase->m_pTable);
+			break;
+		}
+		pBase = pBase->m_pNext;
+	}
+
+	fclose(fp);
+}
+
+char *UTIL_DataFlagsToString(int flags)
+{
+	static char str[1024];
+	str[0] = 0;
+
+	if (flags & FTYPEDESC_GLOBAL)
+	{
+		strcat(str,	"Global|");
+	}
+	if (flags & FTYPEDESC_SAVE)
+	{
+		strcat(str,	"Save|");
+	}
+	if (flags & FTYPEDESC_KEY)
+	{
+		strcat(str,	"Key|");
+	}
+	if (flags & FTYPEDESC_INPUT)
+	{
+		strcat(str,	"Input|");
+	}
+	if (flags & FTYPEDESC_OUTPUT)
+	{
+		strcat(str,	"Output|");
+	}
+	if (flags & FTYPEDESC_FUNCTIONTABLE)
+	{
+		strcat(str,	"FunctionTable|");
+	}
+	if (flags & FTYPEDESC_PTR)
+	{
+		strcat(str,	"Ptr|");
+	}
+	if (flags & FTYPEDESC_OVERRIDE)
+	{
+		strcat(str,	"Override|");
+	}
+
+	int len = strlen(str) - 1;
+	if (len > 0)
+	{
+		str[len] = 0; // Strip the final '|'
+	}
+
+	return str;
+}
+
+#if SOURCE_ENGINE == SE_LEFT4DEAD2
+inline int GetTypeDescOffs(typedescription_t *td)
+{
+	return td->fieldOffset;
+}
+#elif SOURCE_ENGINE == SE_TF2
+inline int GetTypeDescOffs(typedescription_t *td)
+{
+	return td->fieldOffset[TD_OFFSET_NORMAL];
+}
+#endif
+
+void UTIL_DrawDataTable(FILE *fp, datamap_t *pMap, int level = 1)
+{
+	const char *externalname;
+	char *flags;
+
+	while (pMap)
+	{
+		std::vector<int> printlater{};
+		
+		for (int i=0; i<pMap->dataNumFields; i++)
+		{
+			if (pMap->dataDesc[i].fieldName == NULL)
+			{
+				continue;
+			}
+
+			if (!pMap->dataDesc[i].td)
+			{
+				externalname  = pMap->dataDesc[i].externalName;
+				flags = UTIL_DataFlagsToString(pMap->dataDesc[i].flags);
+
+				if (externalname == NULL)
+				{
+					fprintf(fp, "%*sMember: %s (Offset %d) (%s)(%i Bytes)\n", level, "", pMap->dataDesc[i].fieldName, GetTypeDescOffs(&pMap->dataDesc[i]), flags, pMap->dataDesc[i].fieldSizeInBytes);
+				}
+				else
+				{
+					fprintf(fp, "%*sMember: %s (Offset %d) (%s)(%i Bytes) - %s\n", level, "", pMap->dataDesc[i].fieldName, GetTypeDescOffs(&pMap->dataDesc[i]), flags, pMap->dataDesc[i].fieldSizeInBytes, externalname);
+				}
+			}
+			else
+			{
+				printlater.emplace_back(i);
+			}
+		}
+		
+		for(auto it : printlater) {
+			int i = it;
+			
+			fprintf(fp, " %*sSub-Class Table: %s - %s\n", level, "", pMap->dataDesc[i].fieldName, pMap->dataDesc[i].td->dataClassName);
+			UTIL_DrawDataTable(fp, pMap->dataDesc[i].td, level+1);
+		}
+		
+		pMap = pMap->baseMap;
+		
+		if(pMap) {
+			++level;
+			
+			fprintf(fp, "%*sBase Table: %s\n", 
+					level, "", 
+					pMap->dataClassName);
+			
+			++level;
+		}
+	}
+}
+
+CON_COMMAND(dump_datamaps_nm, "Dumps the data map list as a text file")
+{
+	if (args.ArgC() < 2)
+	{
+		META_CONPRINT("Usage: dump_datamaps_nm <file>\n");
+		return;
+	}
+
+	const char *file = args.Arg(1);
+	if (!file || file[0] == '\0')
+	{
+		META_CONPRINT("Usage: dump_datamaps_nm <file>\n");
+		return;
+	}
+
+	char path[PLATFORM_MAX_PATH];
+	g_pSM->BuildPath(Path_Game, path, sizeof(path), "%s", file);
+
+	FILE *fp = NULL;
+	if ((fp = fopen(path, "wt")) == NULL)
+	{
+		META_CONPRINTF("Could not open file \"%s\"\n", path);
+		return;
+	}
+
+	char buffer[80];
+	buffer[0] = 0;
+
+	time_t t = g_pSM->GetAdjustedTime();
+	size_t written = 0;
+	{
+#ifdef PLATFORM_WINDOWS
+		InvalidParameterHandler p;
+#endif
+		written = strftime(buffer, sizeof(buffer), "%Y/%m/%d", localtime(&t));
+	}
+
+	fprintf(fp, "// Dump of all datamaps for \"%s\" as at %s\n//\n//\n", g_pSM->GetGameFolderName(), buffer);
+
+
+	fprintf(fp, "// Flag Details:\n//\n");
+
+	fprintf(fp, "// Global: This field is masked for global entity save/restore\n");
+	fprintf(fp, "// Save: This field is saved to disk\n");
+	fprintf(fp, "// Key: This field can be requested and written to by string name at load time\n");
+	fprintf(fp, "// Input: This field can be written to by string name at run time, and a function called\n");
+	fprintf(fp, "// Output: This field propogates it's value to all targets whenever it changes\n");
+	fprintf(fp, "// FunctionTable: This is a table entry for a member function pointer\n");
+	fprintf(fp, "// Ptr: This field is a pointer, not an embedded object\n");
+	fprintf(fp, "// Override: The field is an override for one in a base class (only used by prediction system for now)\n");
+
+	fprintf(fp, "//\n\n");
+
+	static int offsEFlags = -1;
+	for ( int i = dictionary->m_Factories.First(); i != dictionary->m_Factories.InvalidIndex(); i = dictionary->m_Factories.Next( i ) )
+	{
+		IServerNetworkable *entity = dictionary->Create(dictionary->m_Factories.GetElementName(i));
+		datamap_t *pMap = gamehelpers->GetDataMap(entity->GetBaseEntity());
+
+		fprintf(fp,"%s - %s\n", pMap->dataClassName, dictionary->m_Factories.GetElementName(i));
+
+		UTIL_DrawDataTable(fp, pMap);
+
+		if (offsEFlags == -1)
+		{
+			sm_datatable_info_t info;
+			if (!gamehelpers->FindDataMapInfo(pMap, "m_iEFlags", &info))
+			{
+				continue;
+			}
+
+			offsEFlags = info.actual_offset;
+		}
+		
+		int *eflags = (int *)((char *)entity->GetBaseEntity() + offsEFlags);
+		*eflags |= (1<<0); // EFL_KILLME
+	}
+
+	fclose(fp);
+
+}
+
+CON_COMMAND(dump_datamaps_cls, "Dumps the data map list as a text file")
+{
+	if (args.ArgC() < 3)
+	{
+		META_CONPRINT("Usage: dump_datamaps_cls <cls> <file>\n");
+		return;
+	}
+	
+	const char *cls = args.Arg(1);
+	if (!cls || cls[0] == '\0')
+	{
+		META_CONPRINT("Usage: dump_datamaps_cls <cls> <file>\n");
+		return;
+	}
+
+	const char *file = args.Arg(2);
+	if (!file || file[0] == '\0')
+	{
+		META_CONPRINT("Usage: dump_datamaps_cls <cls> <file>\n");
+		return;
+	}
+
+	char path[PLATFORM_MAX_PATH];
+	g_pSM->BuildPath(Path_Game, path, sizeof(path), "%s", file);
+
+	FILE *fp = NULL;
+	if ((fp = fopen(path, "wt")) == NULL)
+	{
+		META_CONPRINTF("Could not open file \"%s\"\n", path);
+		return;
+	}
+
+	char buffer[80];
+	buffer[0] = 0;
+
+	time_t t = g_pSM->GetAdjustedTime();
+	size_t written = 0;
+	{
+#ifdef PLATFORM_WINDOWS
+		InvalidParameterHandler p;
+#endif
+		written = strftime(buffer, sizeof(buffer), "%Y/%m/%d", localtime(&t));
+	}
+
+	fprintf(fp, "// Dump of %s datamaps for \"%s\" as at %s\n//\n//\n", cls, g_pSM->GetGameFolderName(), buffer);
+
+
+	fprintf(fp, "// Flag Details:\n//\n");
+
+	fprintf(fp, "// Global: This field is masked for global entity save/restore\n");
+	fprintf(fp, "// Save: This field is saved to disk\n");
+	fprintf(fp, "// Key: This field can be requested and written to by string name at load time\n");
+	fprintf(fp, "// Input: This field can be written to by string name at run time, and a function called\n");
+	fprintf(fp, "// Output: This field propogates it's value to all targets whenever it changes\n");
+	fprintf(fp, "// FunctionTable: This is a table entry for a member function pointer\n");
+	fprintf(fp, "// Ptr: This field is a pointer, not an embedded object\n");
+	fprintf(fp, "// Override: The field is an override for one in a base class (only used by prediction system for now)\n");
+
+	fprintf(fp, "//\n\n");
+	
+	IServerNetworkable *entity = dictionary->Create(cls);
+	
+	if(entity) {
+		datamap_t *pMap = gamehelpers->GetDataMap(entity->GetBaseEntity());
+
+		fprintf(fp,"%s - %s\n", pMap->dataClassName, cls);
+
+		UTIL_DrawDataTable(fp, pMap);
+
+		static int offsEFlags = -1;
+		if (offsEFlags == -1)
+		{
+			sm_datatable_info_t info;
+			gamehelpers->FindDataMapInfo(pMap, "m_iEFlags", &info);
+
+			offsEFlags = info.actual_offset;
+		}
+		
+		int *eflags = (int *)((char *)entity->GetBaseEntity() + offsEFlags);
+		*eflags |= (1<<0); // EFL_KILLME
+	}
+
+	fclose(fp);
+
 }

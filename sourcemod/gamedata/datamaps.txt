@@ -40,6 +40,16 @@
 				"library" "server"
 				"linux" "@_ZN11CBaseEntity23PhysicsRunSpecificThinkEiMS_FvvE"
 			}
+			"SV_EnsureInstanceBaseline"
+			{
+				"library" "engine"
+				"linux" "@_Z25SV_EnsureInstanceBaselineP11ServerClassiPKvi"
+			}
+			"SV_WriteClassInfos"
+			{
+				"library" "engine"
+				"linux" "@_Z18SV_WriteClassInfosP11ServerClassR8bf_write"
+			}
 		}
 	}
 	"left4dead2"
