@@ -792,49 +792,50 @@ struct custom_prop_info_t
 	{
 		for(custom_typedescription_t &desc : dataDesc) {
 			int offset = desc.get_offset();
+			unsigned char *ptr = (((unsigned char *)pEntity) + offset);
 			switch(desc.fieldType) {
 				case FIELD_EHANDLE: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						((EHANDLE *)(((unsigned char *)pEntity) + offset + (i * sizeof(EHANDLE))))->~EHANDLE();
+						((EHANDLE *)(ptr + (i * sizeof(EHANDLE))))->~EHANDLE();
 					}
 					break;
 				}
 				case FIELD_POSITION_VECTOR:
 				case FIELD_VECTOR: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						((Vector *)(((unsigned char *)pEntity) + offset + (i * sizeof(Vector))))->~Vector();
+						((Vector *)(ptr + (i * sizeof(Vector))))->~Vector();
 					}
 					break;
 				}
 				case FIELD_VECTOR2D: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						((Vector2D *)(((unsigned char *)pEntity) + offset + (i * sizeof(Vector2D))))->~Vector2D();
+						((Vector2D *)(ptr + (i * sizeof(Vector2D))))->~Vector2D();
 					}
 					break;
 				}
 				case FIELD_QUATERNION: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						((Quaternion *)(((unsigned char *)pEntity) + offset + (i * sizeof(Quaternion))))->~Quaternion();
+						((Quaternion *)(ptr + (i * sizeof(Quaternion))))->~Quaternion();
 					}
 					break;
 				}
 				case FIELD_VMATRIX_WORLDSPACE:
 				case FIELD_VMATRIX: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						((VMatrix *)(((unsigned char *)pEntity) + offset + (i * sizeof(VMatrix))))->~VMatrix();
+						((VMatrix *)(ptr + (i * sizeof(VMatrix))))->~VMatrix();
 					}
 					break;
 				}
 				case FIELD_MATRIX3X4_WORLDSPACE: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						((matrix3x4_t *)(((unsigned char *)pEntity) + offset + (i * sizeof(matrix3x4_t))))->~matrix3x4_t();
+						((matrix3x4_t *)(ptr + (i * sizeof(matrix3x4_t))))->~matrix3x4_t();
 					}
 					break;
 				}
 #if SOURCE_ENGINE == SE_LEFT4DEAD2
 				case FIELD_VECTOR4D: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						((Vector4D *)(((unsigned char *)pEntity) + offset + (i * sizeof(Vector4D))))->~Vector4D();
+						((Vector4D *)(ptr + (i * sizeof(Vector4D))))->~Vector4D();
 					}
 					break;
 				}
@@ -842,7 +843,7 @@ struct custom_prop_info_t
 				default: {
 					if(desc.fieldType == FIELD_CUSTOM && (desc.flags & FTYPEDESC_OUTPUT)) {
 						for(int i = 0; i < desc.fieldSize; ++i) {
-							((variant_t *)(((unsigned char *)pEntity) + offset + (i * sizeof(variant_t))))->~variant_t();
+							((variant_t *)(ptr + (i * sizeof(variant_t))))->~variant_t();
 						}
 					}
 					break;
@@ -855,10 +856,11 @@ struct custom_prop_info_t
 	{
 		for(custom_typedescription_t &desc : dataDesc) {
 			int offset = desc.get_offset();
+			unsigned char *ptr = (((unsigned char *)pEntity) + offset);
 			switch(desc.fieldType) {
 				case FIELD_COLOR32: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						color32 &color = *(color32 *)(((unsigned char *)pEntity) + offset + (i * sizeof(color32)));
+						color32 &color = *new (ptr + (i * sizeof(color32))) color32();
 						color.r = 255;
 						color.g = 255;
 						color.b = 255;
@@ -868,46 +870,46 @@ struct custom_prop_info_t
 				}
 				case FIELD_EHANDLE: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						new ((EHANDLE *)(((unsigned char *)pEntity) + offset + (i * sizeof(EHANDLE)))) EHANDLE();
+						new (ptr + (i * sizeof(EHANDLE))) EHANDLE();
 					}
 					break;
 				}
 				case FIELD_POSITION_VECTOR:
 				case FIELD_VECTOR: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						new ((Vector *)(((unsigned char *)pEntity) + offset + (i * sizeof(Vector)))) Vector();
+						new (ptr + (i * sizeof(Vector))) Vector();
 					}
 					break;
 				}
 				case FIELD_VECTOR2D: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						new ((Vector2D *)(((unsigned char *)pEntity) + offset + (i * sizeof(Vector2D)))) Vector2D();
+						new (ptr + (i * sizeof(Vector2D))) Vector2D();
 					}
 					break;
 				}
 				case FIELD_QUATERNION: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						new ((Quaternion *)(((unsigned char *)pEntity) + offset + (i * sizeof(Quaternion)))) Quaternion();
+						new (ptr + (i * sizeof(Quaternion))) Quaternion();
 					}
 					break;
 				}
 				case FIELD_VMATRIX_WORLDSPACE:
 				case FIELD_VMATRIX: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						new ((VMatrix *)(((unsigned char *)pEntity) + offset + (i * sizeof(VMatrix)))) VMatrix();
+						new (ptr + (i * sizeof(VMatrix))) VMatrix();
 					}
 					break;
 				}
 				case FIELD_MATRIX3X4_WORLDSPACE: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						new ((matrix3x4_t *)(((unsigned char *)pEntity) + offset + (i * sizeof(matrix3x4_t)))) matrix3x4_t();
+						new (ptr + (i * sizeof(matrix3x4_t))) matrix3x4_t();
 					}
 					break;
 				}
 #if SOURCE_ENGINE == SE_LEFT4DEAD2
 				case FIELD_VECTOR4D: {
 					for(int i = 0; i < desc.fieldSize; ++i) {
-						new ((Vector4D *)(((unsigned char *)pEntity) + offset + (i * sizeof(Vector4D)))) Vector4D();
+						new (ptr + (i * sizeof(Vector4D))) Vector4D();
 					}
 					break;
 				}
@@ -915,7 +917,7 @@ struct custom_prop_info_t
 				default: {
 					if(desc.fieldType == FIELD_CUSTOM && (desc.flags & FTYPEDESC_OUTPUT)) {
 						for(int i = 0; i < desc.fieldSize; ++i) {
-							new ((variant_t *)(((unsigned char *)pEntity) + offset + (i * sizeof(variant_t)))) variant_t();
+							new (ptr + (i * sizeof(variant_t))) variant_t();
 						}
 					}
 					break;
@@ -1050,8 +1052,6 @@ struct custom_prop_info_t
 
 SH_DECL_HOOK0(CBaseEntity, GetServerClass, SH_NOATTRIB, 0, ServerClass *);
 
-struct serverclass_override_t;
-
 class custom_ServerClass
 {
 public:
@@ -1090,8 +1090,6 @@ public:
 
 	// This is an index into the network string table (sv.GetInstanceBaselineTable()).
 	int							m_InstanceBaselineIndex; // INVALID_STRING_INDEX if not initialized yet.
-	
-	serverclass_override_t *owner = nullptr;
 };
 
 SendProp *UTIL_FindInSendTable(SendTable *pTable, const char *name, bool recursive, bool ignoreexclude)
@@ -1298,8 +1296,6 @@ struct serverclass_override_t
 	
 	void do_override(CBaseEntity *pEntity);
 	
-	void generate_class_id(bool baseline);
-	void remove_class_id();
 	void setbaseline(int id);
 	void remove_base_line();
 	void set_class_id(int id, bool baseline);
@@ -1308,9 +1304,7 @@ struct serverclass_override_t
 	void set_base_class(SendTable *table);
 	void unexclude_prop(SendProp *prop, SendProp *realprop);
 	
-	void pop_base();
-	
-	static bool is_custom(ServerClass *pClass);
+	void init();
 	
 	IEntityFactory *fac = nullptr;
 	bool fac_is_sp = false;
@@ -1326,10 +1320,10 @@ struct serverclass_override_t
 	bool freehndl = true;
 	bool was_overriden = false;
 	bool base_class_set = false;
-	bool set_classid = false;
 	SendProp *m_pProps = nullptr;
 	int size = 0;
 	std::vector<unexclude_prop_t> exclude_props{};
+	size_t counterid = 0;
 };
 
 class sp_entity_factory : public IEntityFactory
@@ -1553,38 +1547,10 @@ void serverclass_override_t::set_base_class(SendTable *table2)
 	base_class_set = true;
 }
 
-size_t custom_server_classid = 0;
-
-void serverclass_override_t::remove_class_id()
-{
-	if(set_classid) {
-		remove_base_line();
-		
-		--custom_server_classid;
-		set_classid = false;
-	}
-	
-	cls.m_ClassID = -1;
-}
-
-void serverclass_override_t::generate_class_id(bool baseline)
-{
-	remove_class_id();
-	
-	++custom_server_classid;
-	set_classid = true;
-	
-	cls.m_ClassID = custom_server_classid;
-	if(baseline) {
-		setbaseline(custom_server_classid);
-	}
-}
-
 void serverclass_override_t::set_class_id(int id, bool baseline)
 {
-	remove_class_id();
-	
 	cls.m_ClassID = id;
+
 	if(baseline) {
 		setbaseline(id);
 	}
@@ -1622,43 +1588,27 @@ void serverclass_override_t::override_with(ServerClass *netclass)
 	fakecls = netclass;
 	
 	set_class_id(fakecls->m_ClassID, false);
-}
-
-void serverclass_override_t::pop_base()
-{
-	SendTable *currbase = props[0].GetDataTable();
-	
-	for(int i = 0; i < currbase->GetNumProps(); ++i) {
-		SendProp *pProp = currbase->GetProp(i);
-		
-		if(stricmp(pProp->GetName(), "baseclass") == 0) {
-			currbase = pProp->GetDataTable();
-			break;
-		}
-	}
-	
-	props[0].SetDataTable(currbase);
+	tbl.m_pPrecalc = fakecls->m_pTable->m_pPrecalc;
 }
 
 size_t classoverridecounter = 0;
 
-#define MAGIC_OFFSET 69
-
-bool serverclass_override_t::is_custom(ServerClass *pClass)
+void serverclass_override_t::init()
 {
-	SendTable *table = pClass->m_pTable;
+	props[0].SetDataTable(realcls->m_pTable);
 	
-	for(int i = 0; i < table->GetNumProps(); ++i) {
-		SendProp *pProp = table->GetProp(i);
-		
-		if(stricmp(pProp->GetName(), "baseclass") == 0) {
-			if(pProp->GetOffset() == MAGIC_OFFSET) {
-				return true;
-			}
-		}
-	}
+	std::string tablename{realcls->m_pTable->m_pNetTableName};
+	tablename += "_custom_";
+	tablename += std::to_string(counterid);
+	tbl.set_name(tablename);
+	tbl.m_pPrecalc = realcls->m_pTable->m_pPrecalc;
 	
-	return false;
+	cls.m_ClassID = realcls->m_ClassID;
+	std::string netname{realcls->m_pNetworkName};
+	netname += "_custom_";
+	netname += std::to_string(counterid);
+	cls.set_name(netname);
+	cls.m_InstanceBaselineIndex = realcls->m_InstanceBaselineIndex;
 }
 
 serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_)
@@ -1674,33 +1624,20 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	
 	server_map[clsname] = this;
 	
+	counterid = classoverridecounter++;
+	
 	props.emplace_back();
 	SendProp *prop = &props.back();
 	prop->m_Type = DPT_DataTable;
 	prop->m_pVarName = "baseclass";
-	prop->SetOffset(MAGIC_OFFSET);
-	prop->SetDataTable(realcls->m_pTable);
+	prop->SetOffset(0);
 	prop->SetDataTableProxyFn(SendProxy_DataTableToDataTable);
 	prop->SetFlags(SPROP_PROXY_ALWAYS_YES|SPROP_COLLAPSIBLE);
 	
 	tbl.m_pProps = props.data();
 	tbl.m_nProps = props.size();
-	std::string tablename{realcls->m_pTable->m_pNetTableName};
-	tablename += "_custom_";
-	tablename += std::to_string(classoverridecounter);
-	tbl.set_name(tablename);
-	tbl.m_pPrecalc = realcls->m_pTable->m_pPrecalc;
-	
-	cls.owner = this;
 	
 	cls.m_pTable = &tbl;
-	
-	cls.m_ClassID = realcls->m_ClassID;
-	std::string netname{realcls->m_pNetworkName};
-	netname += "_custom_";
-	netname += std::to_string(classoverridecounter);
-	cls.set_name(netname);
-	cls.m_InstanceBaselineIndex = realcls->m_InstanceBaselineIndex;
 	
 	cls.m_pNext = nullptr;
 	
@@ -1714,7 +1651,9 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	
 	((CBaseServer *)server)->increment_svclasses();
 	
-	++classoverridecounter;
+	if(realcls) {
+		init();
+	}
 }
 
 extern void remove_serverclass_from_sm_cache(ServerClass *pMap);
@@ -1728,7 +1667,7 @@ serverclass_override_t::~serverclass_override_t()
 	}
 	
 	for(ServerClass *cur = custom_server_head, *prev = nullptr; cur != nullptr; prev = cur, cur = cur->m_pNext) {
-		if(cur == (ServerClass *)this) {
+		if(cur == (ServerClass *)&cls) {
 			if(prev != nullptr) {
 				prev->m_pNext = cur->m_pNext;
 			} else {
@@ -1742,8 +1681,6 @@ serverclass_override_t::~serverclass_override_t()
 	if(!custom_server_head) {
 		g_pServerClassTail->m_pNext = nullptr;
 	}
-	
-	remove_class_id();
 	
 	for(auto &it : exclude_props) {
 		it.remove();
@@ -1854,6 +1791,11 @@ custom_prop_info_t::~custom_prop_info_t()
 
 void serverclass_override_t::do_override(CBaseEntity *pEntity)
 {
+	if(!realcls) {
+		realcls = pEntity->GetServerClass();
+		init();
+	}
+	
 	SH_ADD_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
 	SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
 }
@@ -1878,7 +1820,7 @@ void custom_prop_info_t::do_override(CBaseEntity *pEntity)
 		was_overriden = true;
 	}
 	
-	zero(pEntity);
+	//zero(pEntity);
 	
 	SH_ADD_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
 	SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
@@ -2172,6 +2114,10 @@ cell_t CustomSendtableunexclude_prop(IPluginContext *pContext, const cell_t *par
 		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
 	}
 	
+	if(!factory->realcls) {
+		return pContext->ThrowNativeError("this table wasnt initialized yet");
+	}
+	
 	char *tablename = nullptr;
 	pContext->LocalToString(params[2], &tablename);
 
@@ -2216,6 +2162,10 @@ cell_t CustomSendtableset_base_class(IPluginContext *pContext, const cell_t *par
 	
 	if(factory->base_class_set) {
 		return pContext->ThrowNativeError("base class was already set");
+	}
+	
+	if(!factory->realcls) {
+		return pContext->ThrowNativeError("this table wasnt initialized yet");
 	}
 	
 	char *netname = nullptr;
@@ -2266,21 +2216,6 @@ cell_t CustomSendtableset_network_name(IPluginContext *pContext, const cell_t *p
 	return 0;
 }
 
-cell_t CustomSendtablepop_base(IPluginContext *pContext, const cell_t *params)
-{
-	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
-	
-	serverclass_override_t *factory = nullptr;
-	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
-	if(err != HandleError_None)
-	{
-		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
-	}
-	
-	factory->pop_base();
-	return 0;
-}
-
 cell_t CustomSendtableoverride_with(IPluginContext *pContext, const cell_t *params)
 {
 	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
@@ -2290,10 +2225,6 @@ cell_t CustomSendtableoverride_with(IPluginContext *pContext, const cell_t *para
 	if(err != HandleError_None)
 	{
 		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
-	}
-	
-	if(factory->set_classid || factory->fakecls != nullptr) {
-		return pContext->ThrowNativeError("already has been overriden");
 	}
 	
 	char *netname = nullptr;
@@ -2325,9 +2256,13 @@ cell_t CustomSendtablefrom_classname(IPluginContext *pContext, const cell_t *par
 	char *netname = nullptr;
 	pContext->LocalToString(params[2], &netname);
 	
-	ServerClass *netclass = FindServerClass(netname);
-	if(!netclass) {
-		return pContext->ThrowNativeError("invalid netname %s", netname);
+	ServerClass *netclass = nullptr;
+	
+	if(netname[0] != '\0') {
+		netclass = FindServerClass(netname);
+		if(!netclass) {
+			return pContext->ThrowNativeError("invalid netname %s", netname);
+		}
 	}
 	
 	std::string clsname{classname};
@@ -2359,9 +2294,13 @@ cell_t CustomSendtablefrom_factory(IPluginContext *pContext, const cell_t *param
 	char *netname = nullptr;
 	pContext->LocalToString(params[2], &netname);
 	
-	ServerClass *netclass = FindServerClass(netname);
-	if(!netclass) {
-		return pContext->ThrowNativeError("invalid netname %s", netname);
+	ServerClass *netclass = nullptr;
+	
+	if(netname[0] != '\0') {
+		netclass = FindServerClass(netname);
+		if(!netclass) {
+			return pContext->ThrowNativeError("invalid netname %s", netname);
+		}
 	}
 	
 	serverclass_override_t *obj = new serverclass_override_t{factory, std::move(name), netclass};
@@ -2501,7 +2440,6 @@ sp_nativeinfo_t natives[] =
 	{"CustomSendtable.set_base_class", CustomSendtableset_base_class},
 	{"CustomSendtable.set_name", CustomSendtableset_name},
 	{"CustomSendtable.set_network_name", CustomSendtableset_network_name},
-	{"CustomSendtable.pop_base", CustomSendtablepop_base},
 	{"CustomDatamap.from_classname", CustomDatamapfrom_classname},
 	{"CustomDatamap.from_factory", CustomDatamapfrom_factory},
 	{"CustomDatamap.add_prop", CustomDatamapadd_prop},
@@ -2621,7 +2559,6 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 		
 		g_pServerClassTail = g_pServerClassTail->m_pNext;
 	}
-	custom_server_classid = g_pServerClassTail->m_ClassID;
 	m_pInstanceBaselineTable = netstringtables->FindTable(INSTANCE_BASELINE_TABLENAME);
 	m_pInstanceBaselineTable->SetStringChangedCallback(nullptr, BaselineChanged);
 #if SOURCE_ENGINE == SE_TF2
@@ -2832,18 +2769,84 @@ CON_COMMAND(dump_serverclasses, "Dumps the class list as a text file")
 
 }
 
-CON_COMMAND(dump_classes, "Dumps the class list as a text file")
+CON_COMMAND(dump_classes_ent, "Dumps the class list as a text file")
+{
+	if (args.ArgC() < 3)
+	{
+		META_CONPRINT("Usage: dump_classes_ent <cls> <file>\n");
+		return;
+	}
+	
+	const char *cls = args.Arg(1);
+	if (!cls || cls[0] == '\0')
+	{
+		META_CONPRINT("Usage: dump_classes_ent <cls> <file>\n");
+		return;
+	}
+
+	const char *file = args.Arg(2);
+	if (!file || file[0] == '\0')
+	{
+		META_CONPRINT("Usage: dump_classes_ent <cls> <file>\n");
+		return;
+	}
+
+	char path[PLATFORM_MAX_PATH];
+	g_pSM->BuildPath(Path_Game, path, sizeof(path), "%s", file);
+
+	FILE *fp = NULL;
+	if ((fp = fopen(path, "wt")) == NULL)
+	{
+		META_CONPRINTF("Could not open file \"%s\"\n", path);
+		return;
+	}
+
+	char buffer[80];
+	buffer[0] = 0;
+
+	time_t t = g_pSM->GetAdjustedTime();
+	size_t written = 0;
+	{
+#ifdef PLATFORM_WINDOWS
+		InvalidParameterHandler p;
+#endif
+		written = strftime(buffer, sizeof(buffer), "%Y/%m/%d", localtime(&t));
+	}
+
+	fprintf(fp, "// Dump of %s classes for \"%s\" as at %s\n//\n\n", cls, g_pSM->GetGameFolderName(), buffer);
+
+	IServerNetworkable *entity = dictionary->Create(cls);
+		
+	if(entity) {
+		ServerClass *sclass = entity->GetServerClass();
+		datamap_t *pMap = gamehelpers->GetDataMap(entity->GetBaseEntity());
+		fprintf(fp,"%s\n",cls);
+		fprintf(fp,"  %s - %i (%s)\n",sclass->GetName(), sclass->m_ClassID, baselinemap[sclass->m_ClassID]->GetName());
+		fprintf(fp,"  %s\n",pMap->dataClassName);
+		
+		sm_datatable_info_t info;
+		gamehelpers->FindDataMapInfo(pMap, "m_iEFlags", &info);
+		
+		int *eflags = (int *)((char *)entity->GetBaseEntity() + info.actual_offset);
+		*eflags |= (1<<0); // EFL_KILLME
+	}
+
+	fclose(fp);
+
+}
+
+CON_COMMAND(dump_classes_ex, "Dumps the class list as a text file")
 {
 	if (args.ArgC() < 2)
 	{
-		META_CONPRINT("Usage: dump_classes <file>\n");
+		META_CONPRINT("Usage: dump_classes_ex <file>\n");
 		return;
 	}
 
 	const char *file = args.Arg(1);
 	if (!file || file[0] == '\0')
 	{
-		META_CONPRINT("Usage: dump_classes <file>\n");
+		META_CONPRINT("Usage: dump_classes_ex <file>\n");
 		return;
 	}
 
@@ -2876,9 +2879,12 @@ CON_COMMAND(dump_classes, "Dumps the class list as a text file")
 	{
 		IServerNetworkable *entity = dictionary->Create(dictionary->m_Factories.GetElementName(i));
 		ServerClass *sclass = entity->GetServerClass();
-		fprintf(fp,"%s - %s\n",sclass->GetName(), dictionary->m_Factories.GetElementName(i));
+		datamap_t *pMap = gamehelpers->GetDataMap(entity->GetBaseEntity());
+		fprintf(fp,"%s\n",dictionary->m_Factories.GetElementName(i));
+		fprintf(fp,"  %s - %i (%s)\n",sclass->GetName(), sclass->m_ClassID, baselinemap[sclass->m_ClassID]->GetName());
+		fprintf(fp,"  %s\n",pMap->dataClassName);
 		
-		if (!gamehelpers->FindDataMapInfo(gamehelpers->GetDataMap(entity->GetBaseEntity()), "m_iEFlags", &info))
+		if (!gamehelpers->FindDataMapInfo(pMap, "m_iEFlags", &info))
 			continue;
 		
 		int *eflags = (int *)((char *)entity->GetBaseEntity() + info.actual_offset);
@@ -3089,6 +3095,12 @@ void UTIL_DrawSendTable(FILE *fp, SendTable *pTable, int level = 1)
 	}
 }
 
+void UTIL_DrawServerClass(FILE *fp, ServerClass *pBase)
+{
+	fprintf(fp, "%s (table %s)(id %i (%s))\n", pBase->GetName(), pBase->m_pTable->GetName(), pBase->m_ClassID, baselinemap[pBase->m_ClassID]->GetName());
+	UTIL_DrawSendTable(fp, pBase->m_pTable);
+}
+
 CON_COMMAND(dump_netprops_inv, "Dumps the networkable property table as a text file")
 {
 	if (args.ArgC() < 2)
@@ -3131,9 +3143,79 @@ CON_COMMAND(dump_netprops_inv, "Dumps the networkable property table as a text f
 	ServerClass *pBase = gamedll->GetAllServerClasses();
 	while (pBase != NULL)
 	{
-		fprintf(fp, "%s (type %s)\n", pBase->GetName(), pBase->m_pTable->GetName());
-		UTIL_DrawSendTable(fp, pBase->m_pTable);
+		UTIL_DrawServerClass(fp, pBase);
 		pBase = pBase->m_pNext;
+	}
+
+	fclose(fp);
+}
+
+CON_COMMAND(dump_netprops_ent, "Dumps the networkable property table as a text file")
+{
+	if (args.ArgC() < 3)
+	{
+		META_CONPRINT("Usage: dump_netprops_ent <cls> <file>\n");
+		return;
+	}
+
+	const char *cls = args.Arg(1);
+	if (!cls || cls[0] == '\0')
+	{
+		META_CONPRINT("Usage: dump_netprops_ent <cls> <file>\n");
+		return;
+	}
+	
+	const char *file = args.Arg(2);
+	if (!file || file[0] == '\0')
+	{
+		META_CONPRINT("Usage: dump_netprops_ent <cls> <file>\n");
+		return;
+	}
+
+	char path[PLATFORM_MAX_PATH];
+	g_pSM->BuildPath(Path_Game, path, sizeof(path), "%s", file);
+
+	FILE *fp = NULL;
+	if ((fp = fopen(path, "wt")) == NULL)
+	{
+		META_CONPRINTF("Could not open file \"%s\"\n", path);
+		return;
+	}
+	
+	char buffer[80];
+	buffer[0] = 0;
+
+	time_t t = g_pSM->GetAdjustedTime();
+	size_t written = 0;
+	{
+#ifdef PLATFORM_WINDOWS
+		InvalidParameterHandler p;
+#endif
+		written = strftime(buffer, sizeof(buffer), "%Y/%m/%d", localtime(&t));
+	}
+
+	fprintf(fp, "// Dump of %s network properties for \"%s\" as at %s\n//\n\n", cls, g_pSM->GetGameFolderName(), buffer);
+
+	IServerNetworkable *entity = dictionary->Create(cls);
+	
+	if(entity) {
+		ServerClass *pBase = entity->GetServerClass();
+		
+		UTIL_DrawServerClass(fp, pBase);
+		
+		datamap_t *pMap = gamehelpers->GetDataMap(entity->GetBaseEntity());
+		
+		static int offsEFlags = -1;
+		if (offsEFlags == -1)
+		{
+			sm_datatable_info_t info;
+			gamehelpers->FindDataMapInfo(pMap, "m_iEFlags", &info);
+
+			offsEFlags = info.actual_offset;
+		}
+		
+		int *eflags = (int *)((char *)entity->GetBaseEntity() + offsEFlags);
+		*eflags |= (1<<0); // EFL_KILLME
 	}
 
 	fclose(fp);
@@ -3189,8 +3271,7 @@ CON_COMMAND(dump_netprops_cls, "Dumps the networkable property table as a text f
 	while (pBase != NULL)
 	{
 		if(stricmp(pBase->GetName(), cls) == 0) {
-			fprintf(fp, "%s (type %s)\n", pBase->GetName(), pBase->m_pTable->GetName());
-			UTIL_DrawSendTable(fp, pBase->m_pTable);
+			UTIL_DrawServerClass(fp, pBase);
 			break;
 		}
 		pBase = pBase->m_pNext;

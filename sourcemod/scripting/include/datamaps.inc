@@ -60,8 +60,8 @@ methodmap EntityFactoryDictionary
 
 methodmap CustomSendtable < Handle
 {
-	public static native CustomSendtable from_classname(const char[] classname, const char[] netname);
-	public static native CustomSendtable from_factory(CustomEntityFactory fac, const char[] netname);
+	public static native CustomSendtable from_classname(const char[] classname, const char[] netname = "");
+	public static native CustomSendtable from_factory(CustomEntityFactory fac, const char[] netname = "");
 
 	public native void override_with(const char[] netname);
 	public native void unexclude_prop(const char[] dtname, const char[] name);
@@ -69,8 +69,6 @@ methodmap CustomSendtable < Handle
 
 	public native void set_name(const char[] name);
 	public native void set_network_name(const char[] name);
-
-	public native void pop_base();
 };
 
 enum custom_prop_type
