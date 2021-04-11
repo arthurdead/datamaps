@@ -1330,11 +1330,12 @@ class sp_entity_factory : public IEntityFactory
 {
 	sp_entity_factory(std::string &&name_);
 public:
-	sp_entity_factory(std::string &&name_, IPluginFunction *func_, size_t size_)
+	sp_entity_factory(std::string &&name_, IPluginFunction *func_, size_t size_, cell_t data_)
 	: sp_entity_factory(std::move(name_))
 	{
 		func = func_;
 		size = size_;
+		data = data_;
 	}
 	sp_entity_factory(std::string &&name_, IEntityFactory *based_)
 		: sp_entity_factory(std::move(name_))
@@ -1359,6 +1360,7 @@ public:
 	IEntityFactory *based = nullptr;
 	IPluginFunction *func = nullptr;
 	size_t size = (size_t)-1;
+	cell_t data = 0;
 	
 	custom_prop_info_t *custom_prop = nullptr;
 	serverclass_override_t *custom_server = nullptr;
@@ -1847,6 +1849,7 @@ IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
 	} else if(func != nullptr) {
 		cell_t res = 0;
 		func->PushCell(custom_prop ? custom_prop->size : 0);
+		func->PushCell(data);
 		func->Execute(&res);
 		last_cb = size;
 		CBaseEntity *obj = (CBaseEntity *)res;
@@ -1962,7 +1965,7 @@ cell_t EntityFactoryDictionaryregister_function(IPluginContext *pContext, const 
 	
 	IPluginFunction *callback = pContext->GetFunctionById(params[2]);
 	
-	sp_entity_factory *obj = new sp_entity_factory(name, callback, params[3]);
+	sp_entity_factory *obj = new sp_entity_factory(name, callback, params[3], params[4]);
 	
 	Handle_t hndl = handlesys->CreateHandle(factory_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;

@@ -6,7 +6,7 @@
 typeset datamaps_functions
 {
 	//EntityFactoryDictionary.register_function
-	function Address (int size_modifier);
+	function Address (int size_modifier, any data);
 
 	//SetEntityContextThink
 	function void (int entity, const char[] context, any data);
@@ -53,7 +53,7 @@ methodmap EntityFactoryDictionary
 			return null;
 		}
 	}
-	public static native CustomEntityFactory register_function(const char[] classname, datamaps_functions func, int size);
+	public static native CustomEntityFactory register_function(const char[] classname, datamaps_functions func, int size, any data = 0);
 
 	public static native Handle remove(const char[] classname);
 };
