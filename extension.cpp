@@ -132,7 +132,6 @@ __attribute__((__visibility__("default"), __cdecl__)) double __acos_finite(doubl
 }
 }
 
-#if SOURCE_ENGINE == SE_LEFT4DEAD2
 char* AllocateStringHelper2( const char *pFormat, va_list marker )
 {
 	char str[512];
@@ -156,7 +155,6 @@ char* AllocateStringHelper( const char *pFormat, ... )
 
 	return pRet;
 }
-#endif
 
 /**
  * @file extension.cpp
