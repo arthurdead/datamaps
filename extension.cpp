@@ -290,6 +290,7 @@ struct callback_holder_t
 	
 	std::unordered_map<std::string, callback_t> thinkctxs{};
 	
+	int ref = -1;
 	CBaseEntity *pEntity_ = nullptr;
 	IdentityToken_t *owner = nullptr;
 	bool erase = true;
@@ -307,21 +308,21 @@ struct callback_holder_t
 	}
 };
 
-using callback_holder_map_t = std::unordered_map<CBaseEntity *, callback_holder_t *>;
+using callback_holder_map_t = std::unordered_map<int, callback_holder_t *>;
 callback_holder_map_t callbackmap{};
 
 callback_holder_t::callback_holder_t(CBaseEntity *pEntity, IdentityToken_t *owner_)
-	: pEntity_{pEntity}, owner{owner_}
+	: pEntity_{pEntity}, owner{owner_}, ref{gamehelpers->EntityToBCompatRef(pEntity)}
 {
 	SH_ADD_MANUALHOOK(GenericDtor, pEntity_, SH_MEMBER(this, &callback_holder_t::HookEntityDtor), false);
-	
-	callbackmap[pEntity_] = this;
+
+	callbackmap[ref] = this;
 }
 
 callback_holder_t::~callback_holder_t()
 {
 	if(erase) {
-		callbackmap.erase(pEntity_);
+		callbackmap.erase(ref);
 	}
 }
 
@@ -518,14 +519,16 @@ public:
 	
 	void PluginThinkContext()
 	{
-		callback_holder_t *holder = callbackmap[this];
+		int this_ref = gamehelpers->EntityToBCompatRef(this);
+
+		callback_holder_t *holder = callbackmap[this_ref];
 		
 		if(m_iCurrentThinkContext >= 0 && m_iCurrentThinkContext < holder->thinkctxs.size()) {
 			auto it = holder->thinkctxs.begin();
 			std::advance(it, m_iCurrentThinkContext);
 			
 			IPluginFunction *func = it->second.callback;
-			func->PushCell(gamehelpers->EntityToBCompatRef(this));
+			func->PushCell(this_ref);
 			func->PushString(it->first.c_str());
 			func->PushCell(it->second.data);
 			cell_t res = 0;
@@ -535,10 +538,12 @@ public:
 	
 	void PluginThink()
 	{
-		callback_holder_t *holder = callbackmap[this];
+		int this_ref = gamehelpers->EntityToBCompatRef(this);
+
+		callback_holder_t *holder = callbackmap[this_ref];
 		
 		IPluginFunction *func = holder->think.callback;
-		func->PushCell(gamehelpers->EntityToBCompatRef(this));
+		func->PushCell(this_ref);
 		func->PushCell(holder->think.data);
 		cell_t res = 0;
 		func->Execute(&res);
@@ -596,7 +601,7 @@ void RemoveEntity(CBaseEntity *pEntity)
 void remove_all_entities(const std::string &name)
 {
 	CBaseEntity *pEntity = nullptr;
-	while(pEntity = FindEntityByClassname(pEntity, name)) {
+	while((pEntity = FindEntityByClassname(pEntity, name)) != nullptr) {
 		RemoveEntity(pEntity);
 	}
 }
@@ -1649,7 +1654,9 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 		custom_server_head = custom_server_head->m_pNext;
 	}
 	
-	((CBaseServer *)server)->increment_svclasses();
+	if(server) {
+		((CBaseServer *)server)->increment_svclasses();
+	}
 	
 	if(realcls) {
 		init();
@@ -1695,7 +1702,9 @@ serverclass_override_t::~serverclass_override_t()
 		table1->m_pProps = m_pProps;
 	}
 	
-	((CBaseServer *)server)->decrement_svclasses();
+	if(server) {
+		((CBaseServer *)server)->decrement_svclasses();
+	}
 	
 	remove_serverclass_from_sm_cache((ServerClass *)&cls);
 	
@@ -2137,7 +2146,7 @@ cell_t CustomSendtableunexclude_prop(IPluginContext *pContext, const cell_t *par
 	}
 
 	if(!prop->IsExcludeProp()) {
-		return 0;
+		return pContext->ThrowNativeError("%s is not a exclude prop", name);
 	}
 
 	SendProp *realprop = nullptr;
@@ -2342,8 +2351,10 @@ static cell_t SetEntityContextThink(IPluginContext *pContext, const cell_t *para
 	}
 	
 	callback_holder_t *holder = nullptr;
+
+	int ref = gamehelpers->EntityToBCompatRef(pEntity);
 	
-	callback_holder_map_t::iterator it{callbackmap.find(pEntity)};
+	callback_holder_map_t::iterator it{callbackmap.find(ref)};
 	if(it != callbackmap.end()) {
 		holder = it->second;
 	} else {
@@ -2370,7 +2381,9 @@ static cell_t SetEntityThink(IPluginContext *pContext, const cell_t *params)
 	
 	callback_holder_t *holder = nullptr;
 	
-	callback_holder_map_t::iterator it{callbackmap.find(pEntity)};
+	int ref = gamehelpers->EntityToBCompatRef(pEntity);
+
+	callback_holder_map_t::iterator it{callbackmap.find(ref)};
 	if(it != callbackmap.end()) {
 		holder = it->second;
 	} else {
@@ -2752,7 +2765,7 @@ CON_COMMAND(dump_serverclasses, "Dumps the class list as a text file")
 
 	ServerClass *pClass = g_pServerClassHead;
 	while(pClass) {
-		fprintf(fp,"%s\n",pClass->GetName(), pClass->m_ClassID);
+		fprintf(fp,"%s\n",pClass->GetName());
 		fprintf(fp,"  ClassID: %i (%s)\n", pClass->m_ClassID, baselinemap[pClass->m_ClassID]->GetName());
 		if(pClass->m_InstanceBaselineIndex == INVALID_STRING_INDEX) {
 			fprintf(fp,"  InstanceBaselineIndex: INVALID_STRING_INDEX\n");
@@ -3082,8 +3095,7 @@ void UTIL_DrawSendTable(FILE *fp, SendTable *pTable, int level = 1)
 		if(stricmp(pProp->GetName(), "baseclass") == 0) {
 			fprintf(fp, "%*sBase Table: %s\n", 
 				level, "", 
-				pProp->GetDataTable()->GetName(), 
-				pProp->GetOffset());
+				pProp->GetDataTable()->GetName());
 		} else {
 			fprintf(fp, "%*sSub-Class Table: %s (offset %d) (type %s)\n", 
 				level, "", 
