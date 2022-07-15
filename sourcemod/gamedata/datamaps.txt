@@ -50,6 +50,11 @@
 				"library" "engine"
 				"linux" "@_Z18SV_WriteClassInfosP11ServerClassR8bf_write"
 			}
+			"CGameServer::AssignClassIds"
+			{
+				"library" "engine"
+				"linux" "@_ZN11CGameServer14AssignClassIdsEv"
+			}
 		}
 	}
 	"left4dead2"

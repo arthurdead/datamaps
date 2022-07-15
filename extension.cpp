@@ -1327,6 +1327,7 @@ struct serverclass_override_t
 	int size = 0;
 	std::vector<unexclude_prop_t> exclude_props{};
 	size_t counterid = 0;
+	int classid = 0;
 };
 
 class sp_entity_factory : public IEntityFactory
@@ -1555,6 +1556,7 @@ void serverclass_override_t::set_base_class(SendTable *table2)
 void serverclass_override_t::set_class_id(int id, bool baseline)
 {
 	cls.m_ClassID = id;
+	classid = id;
 
 	if(baseline) {
 		setbaseline(id);
@@ -1609,6 +1611,7 @@ void serverclass_override_t::init()
 	tbl.m_pPrecalc = realcls->m_pTable->m_pPrecalc;
 	
 	cls.m_ClassID = realcls->m_ClassID;
+	classid = realcls->m_ClassID;
 	std::string netname{realcls->m_pNetworkName};
 	netname += "_custom_";
 	netname += std::to_string(counterid);
@@ -2549,6 +2552,15 @@ DETOUR_DECL_STATIC4(DetourSV_EnsureInstanceBaseline, void, ServerClass *, pServe
 	DETOUR_STATIC_CALL(DetourSV_EnsureInstanceBaseline)(pServerClass, iEdict, pData, nBytes);
 }
 
+DETOUR_DECL_MEMBER0(DetourCGameServerAssignClassIds, void)
+{
+	DETOUR_MEMBER_CALL(DetourCGameServerAssignClassIds)();
+
+	for(auto &it : server_map) {
+		it.second->cls.m_ClassID = it.second->classid;
+	}
+}
+
 bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool late)
 {
 	gpGlobals = ismm->GetCGlobals();
@@ -2583,9 +2595,9 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	ConVar_Register(0, this);
 	
 	ConVar *sv_instancebaselines = g_pCVar->FindVar("sv_instancebaselines");
-	//sv_instancebaselines->SetValue(true);
+	sv_instancebaselines->SetValue(1);
 	ConVar *sv_sendtables = g_pCVar->FindVar("sv_sendtables");
-	//sv_sendtables->SetValue(false);
+	sv_sendtables->SetValue(2);
 
 	return true;
 }
@@ -2601,6 +2613,8 @@ IGameConfig *g_pGameConf = nullptr;
 CDetour *pPhysicsRunSpecificThink = nullptr;
 
 CDetour *pSV_EnsureInstanceBaseline = nullptr;
+
+CDetour *pCGameServerAssignClassIds = nullptr;
 
 bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 {
@@ -2621,7 +2635,10 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	
 	pSV_EnsureInstanceBaseline = DETOUR_CREATE_STATIC(DetourSV_EnsureInstanceBaseline, "SV_EnsureInstanceBaseline")
 	pSV_EnsureInstanceBaseline->EnableDetour();
-	
+
+	pCGameServerAssignClassIds = DETOUR_CREATE_MEMBER(DetourCGameServerAssignClassIds, "CGameServer::AssignClassIds")
+	pCGameServerAssignClassIds->EnableDetour();
+
 #ifdef SOURCEHOOK_BEING_STUPID
 	void **vtable = *(void ***)engine;
 	int index = vfunc_index(&IVEngineServer::PvAllocEntPrivateData);
@@ -2699,6 +2716,7 @@ void Sample::SDK_OnUnload()
 		pPvAllocEntPrivateData->Destroy();
 	}
 	pPhysicsRunSpecificThink->Destroy();
+	pCGameServerAssignClassIds->Destroy();
 	g_pSDKHooks->RemoveEntityListener(this);
 	plsys->RemovePluginsListener(this);
 	handlesys->RemoveType(factory_handle, myself->GetIdentity());
@@ -2711,16 +2729,18 @@ void Sample::SDK_OnUnload()
 CON_COMMAND(dump_baselinemap, "")
 {
 	for(auto &it : baselinemap) {
-		META_CONPRINTF("%i - %s\n", it.first, it.second->GetName());
+		META_CONPRINTF("%i - %s\n", it.first, it.second ? it.second->GetName() : "NULL");
 	}
 }
 
 CON_COMMAND(dump_baseline, "")
 {
+	m_pInstanceBaselineTable = netstringtables->FindTable(INSTANCE_BASELINE_TABLENAME);
+
 	for(int i = 0; i < m_pInstanceBaselineTable->GetNumStrings(); ++i) {
 		const char *str = m_pInstanceBaselineTable->GetString(i);
 		int id = V_atoi(str);
-		META_CONPRINTF("%i = %s = %s\n", i, str, baselinemap[id]->GetName());
+		META_CONPRINTF("%i = %s = %s\n", i, str, baselinemap[id] ? baselinemap[id]->GetName() : "NULL");
 	}
 }
 
@@ -2763,10 +2783,12 @@ CON_COMMAND(dump_serverclasses, "Dumps the class list as a text file")
 
 	fprintf(fp, "// Dump of all server classes for \"%s\" as at %s\n//\n\n", g_pSM->GetGameFolderName(), buffer);
 
+	m_pInstanceBaselineTable = netstringtables->FindTable(INSTANCE_BASELINE_TABLENAME);
+
 	ServerClass *pClass = g_pServerClassHead;
 	while(pClass) {
 		fprintf(fp,"%s\n",pClass->GetName());
-		fprintf(fp,"  ClassID: %i (%s)\n", pClass->m_ClassID, baselinemap[pClass->m_ClassID]->GetName());
+		fprintf(fp,"  ClassID: %i (%s)\n", pClass->m_ClassID, baselinemap[pClass->m_ClassID] ? baselinemap[pClass->m_ClassID]->GetName() : "NULL");
 		if(pClass->m_InstanceBaselineIndex == INVALID_STRING_INDEX) {
 			fprintf(fp,"  InstanceBaselineIndex: INVALID_STRING_INDEX\n");
 			fprintf(fp,"  BaselineIndex String: NULL\n");
@@ -2774,7 +2796,7 @@ CON_COMMAND(dump_serverclasses, "Dumps the class list as a text file")
 			const char *str = m_pInstanceBaselineTable->GetString(pClass->m_InstanceBaselineIndex);
 			int id = V_atoi(str);
 			fprintf(fp,"  InstanceBaselineIndex: %i\n", pClass->m_InstanceBaselineIndex);
-			fprintf(fp,"  BaselineIndex String: %s (%s)\n", str, baselinemap[id]->GetName());
+			fprintf(fp,"  BaselineIndex String: %s (%s)\n", str, baselinemap[id] ? baselinemap[id]->GetName() : "NULL");
 		}
 		pClass = pClass->m_pNext;
 	}
@@ -2835,7 +2857,7 @@ CON_COMMAND(dump_classes_ent, "Dumps the class list as a text file")
 		ServerClass *sclass = entity->GetServerClass();
 		datamap_t *pMap = gamehelpers->GetDataMap(entity->GetBaseEntity());
 		fprintf(fp,"%s\n",cls);
-		fprintf(fp,"  %s - %i (%s)\n",sclass->GetName(), sclass->m_ClassID, baselinemap[sclass->m_ClassID]->GetName());
+		fprintf(fp,"  %s - %i (%s)\n",sclass->GetName(), sclass->m_ClassID, baselinemap[sclass->m_ClassID] ? baselinemap[sclass->m_ClassID]->GetName() : "NULL");
 		fprintf(fp,"  %s\n",pMap->dataClassName);
 		
 		sm_datatable_info_t info;
@@ -2895,7 +2917,7 @@ CON_COMMAND(dump_classes_ex, "Dumps the class list as a text file")
 		ServerClass *sclass = entity->GetServerClass();
 		datamap_t *pMap = gamehelpers->GetDataMap(entity->GetBaseEntity());
 		fprintf(fp,"%s\n",dictionary->m_Factories.GetElementName(i));
-		fprintf(fp,"  %s - %i (%s)\n",sclass->GetName(), sclass->m_ClassID, baselinemap[sclass->m_ClassID]->GetName());
+		fprintf(fp,"  %s - %i (%s)\n",sclass->GetName(), sclass->m_ClassID, baselinemap[sclass->m_ClassID] ? baselinemap[sclass->m_ClassID]->GetName() : "NULL");
 		fprintf(fp,"  %s\n",pMap->dataClassName);
 		
 		if (!gamehelpers->FindDataMapInfo(pMap, "m_iEFlags", &info))
@@ -3110,7 +3132,7 @@ void UTIL_DrawSendTable(FILE *fp, SendTable *pTable, int level = 1)
 
 void UTIL_DrawServerClass(FILE *fp, ServerClass *pBase)
 {
-	fprintf(fp, "%s (table %s)(id %i (%s))\n", pBase->GetName(), pBase->m_pTable->GetName(), pBase->m_ClassID, baselinemap[pBase->m_ClassID]->GetName());
+	fprintf(fp, "%s (table %s)(id %i (%s))\n", pBase->GetName(), pBase->m_pTable->GetName(), pBase->m_ClassID, baselinemap[pBase->m_ClassID] ? baselinemap[pBase->m_ClassID]->GetName() : "NULL");
 	UTIL_DrawSendTable(fp, pBase->m_pTable);
 }
 
