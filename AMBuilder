@@ -25,6 +25,15 @@ project = Extension.HL2Project(builder, projectName + '.ext')
 
 project.compiler.cxxincludes += [Extension.sm_root]
 
+proxysendpath = os.path.join(builder.currentSourcePath, '../proxysend')
+if not os.path.exists(proxysendpath):
+	if 'PROXYSENDSRC' in os.environ:
+		proxysendpath = os.environ['PROXYSENDSRC']
+
+if os.path.exists(proxysendpath):
+	project.compiler.defines += ['__HAS_PROXYSEND']
+	project.compiler.cxxincludes += [proxysendpath,os.path.join(proxysendpath,'public')]
+
 if os.path.isfile(os.path.join(builder.currentSourcePath, 'sdk', 'smsdk_ext.cpp')):
   # Use the copy included in the project
   project.sources += [os.path.join('sdk', 'smsdk_ext.cpp')]

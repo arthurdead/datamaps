@@ -29,6 +29,8 @@
  * Version: $Id$
  */
 
+#define SOURCEHOOK_BEING_STUPID
+
 #define swap V_swap
 
 #if SOURCE_ENGINE == SE_TF2
@@ -58,6 +60,10 @@
 #include <eiface.h>
 #include <dt_common.h>
 #include <shareddefs.h>
+
+#ifdef __HAS_PROXYSEND
+class proxysend *proxysend = nullptr;
+#endif
 
 #ifndef FMTFUNCTION
 #define FMTFUNCTION(...)
@@ -1043,9 +1049,20 @@ struct custom_prop_info_t
 	{
 		CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
 		dtor(pEntity);
+		remove_hooks(pEntity);
+		RETURN_META(MRES_IGNORED);
+	}
+
+	void remove_hooks(CBaseEntity *pEntity)
+	{
 		SH_REMOVE_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
 		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
-		RETURN_META(MRES_IGNORED);
+	}
+
+	void add_hooks(CBaseEntity *pEntity)
+	{
+		SH_ADD_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
+		SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
 	}
 	
 	void do_override(CBaseEntity *pEntity);
@@ -1054,6 +1071,7 @@ struct custom_prop_info_t
 };
 
 SH_DECL_HOOK0(CBaseEntity, GetServerClass, SH_NOATTRIB, 0, ServerClass *);
+SH_DECL_HOOK0(IServerNetworkable, GetServerClass, SH_NOATTRIB, 0, ServerClass *);
 
 class custom_ServerClass
 {
@@ -1293,15 +1311,28 @@ struct serverclass_override_t
 	void HookEntityDtor()
 	{
 		CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
+		remove_hooks(pEntity);
+		RETURN_META(MRES_IGNORED);
+	}
+
+	void remove_hooks(CBaseEntity *pEntity)
+	{
+		IServerNetworkable *pNet = pEntity->GetNetworkable();
 		SH_REMOVE_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
+		SH_REMOVE_HOOK(IServerNetworkable, GetServerClass, pNet, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
 		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
 	}
+
+	void add_hooks(CBaseEntity *pEntity, IServerNetworkable *pNet)
+	{
+		SH_ADD_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
+		SH_ADD_HOOK(IServerNetworkable, GetServerClass, pNet, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
+		SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
+	}
 	
-	void do_override(CBaseEntity *pEntity);
+	void do_override(CBaseEntity *pEntity, IServerNetworkable *pNet);
 	
-	void setbaseline(int id);
 	void remove_base_line();
-	void set_class_id(int id, bool baseline);
 	
 	void override_with(ServerClass *netclass);
 	void set_base_class(SendTable *table);
@@ -1323,6 +1354,8 @@ struct serverclass_override_t
 	bool freehndl = true;
 	bool was_overriden = false;
 	bool base_class_set = false;
+	bool net_name_set = false;
+	bool dt_name_set = false;
 	SendProp *m_pProps = nullptr;
 	int size = 0;
 	std::vector<unexclude_prop_t> exclude_props{};
@@ -1363,7 +1396,7 @@ public:
 	std::string name{};
 	IEntityFactory *based = nullptr;
 	IPluginFunction *func = nullptr;
-	size_t size = (size_t)-1;
+	size_t size = 0;
 	cell_t data = 0;
 	
 	custom_prop_info_t *custom_prop = nullptr;
@@ -1553,30 +1586,6 @@ void serverclass_override_t::set_base_class(SendTable *table2)
 	base_class_set = true;
 }
 
-void serverclass_override_t::set_class_id(int id, bool baseline)
-{
-	cls.m_ClassID = id;
-	classid = id;
-
-	if(baseline) {
-		setbaseline(id);
-	}
-}
-
-void serverclass_override_t::setbaseline(int id)
-{
-	char idString[32];
-	Q_snprintf(idString, sizeof(idString), "%d", id);
-
-	bool lock = engine->LockNetworkStringTables(true);
-	cls.m_InstanceBaselineIndex = m_pInstanceBaselineTable->FindStringIndex(idString);
-	if(cls.m_InstanceBaselineIndex == INVALID_STRING_INDEX) {
-		static char dummy[1]{0};
-		cls.m_InstanceBaselineIndex = m_pInstanceBaselineTable->AddString(true, idString, sizeof(dummy), &dummy);
-	}
-	engine->LockNetworkStringTables(lock);
-}
-
 void serverclass_override_t::remove_base_line()
 {
 	if(cls.m_InstanceBaselineIndex == INVALID_STRING_INDEX) {
@@ -1594,7 +1603,11 @@ void serverclass_override_t::override_with(ServerClass *netclass)
 {
 	fakecls = netclass;
 	
-	set_class_id(fakecls->m_ClassID, false);
+	cls.m_ClassID = fakecls->m_ClassID;
+	classid = fakecls->m_ClassID;
+
+	cls.m_InstanceBaselineIndex = fakecls->m_InstanceBaselineIndex;
+
 	tbl.m_pPrecalc = fakecls->m_pTable->m_pPrecalc;
 }
 
@@ -1603,20 +1616,29 @@ size_t classoverridecounter = 0;
 void serverclass_override_t::init()
 {
 	props[0].SetDataTable(realcls->m_pTable);
-	
-	std::string tablename{realcls->m_pTable->m_pNetTableName};
-	tablename += "_custom_";
-	tablename += std::to_string(counterid);
-	tbl.set_name(tablename);
-	tbl.m_pPrecalc = realcls->m_pTable->m_pPrecalc;
-	
-	cls.m_ClassID = realcls->m_ClassID;
-	classid = realcls->m_ClassID;
-	std::string netname{realcls->m_pNetworkName};
-	netname += "_custom_";
-	netname += std::to_string(counterid);
-	cls.set_name(netname);
-	cls.m_InstanceBaselineIndex = realcls->m_InstanceBaselineIndex;
+
+	if(!net_name_set) {
+		std::string tablename{realcls->m_pTable->m_pNetTableName};
+		tablename += "_custom_";
+		tablename += std::to_string(counterid);
+		tbl.set_name(tablename);
+	}
+
+	if(!dt_name_set) {
+		std::string netname{realcls->m_pNetworkName};
+		netname += "_custom_";
+		netname += std::to_string(counterid);
+		cls.set_name(netname);
+	}
+
+	if(!fakecls) {
+		cls.m_ClassID = realcls->m_ClassID;
+		classid = realcls->m_ClassID;
+
+		cls.m_InstanceBaselineIndex = realcls->m_InstanceBaselineIndex;
+
+		tbl.m_pPrecalc = realcls->m_pTable->m_pPrecalc;
+	}
 }
 
 serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_)
@@ -1647,22 +1669,32 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	
 	cls.m_pTable = &tbl;
 	
-	cls.m_pNext = nullptr;
-	
-	if(!custom_server_head) {
-		custom_server_head = (ServerClass *)&cls;
-		g_pServerClassTail->m_pNext = custom_server_head;
-	} else {
-		custom_server_head->m_pNext = (ServerClass *)&cls;
-		custom_server_head = custom_server_head->m_pNext;
-	}
-	
+	cls.m_pNext = custom_server_head;
+	custom_server_head = (ServerClass *)&cls;
+
+	g_pServerClassTail->m_pNext = custom_server_head;
+
 	if(server) {
 		((CBaseServer *)server)->increment_svclasses();
 	}
 	
 	if(realcls) {
 		init();
+	} else {
+		props[0].SetDataTable(nullptr);
+		tbl.m_pPrecalc = nullptr;
+		
+		std::string name{"<<unknown: "};
+		name += std::to_string(counterid);
+		name += ">>";
+
+		tbl.set_name(name);
+		cls.set_name(name);
+
+		cls.m_ClassID = -1;
+		classid = -1;
+
+		cls.m_InstanceBaselineIndex = INVALID_STRING_INDEX;
 	}
 }
 
@@ -1677,7 +1709,7 @@ serverclass_override_t::~serverclass_override_t()
 	}
 	
 	for(ServerClass *cur = custom_server_head, *prev = nullptr; cur != nullptr; prev = cur, cur = cur->m_pNext) {
-		if(cur == (ServerClass *)&cls) {
+		if (cur == (ServerClass *)&cls) {
 			if(prev != nullptr) {
 				prev->m_pNext = cur->m_pNext;
 			} else {
@@ -1687,10 +1719,8 @@ serverclass_override_t::~serverclass_override_t()
 			break;
 		}
 	}
-	
-	if(!custom_server_head) {
-		g_pServerClassTail->m_pNext = nullptr;
-	}
+
+	g_pServerClassTail->m_pNext = custom_server_head;
 	
 	for(auto &it : exclude_props) {
 		it.remove();
@@ -1716,8 +1746,7 @@ serverclass_override_t::~serverclass_override_t()
 	}
 	
 	loop_all_entities([this](CBaseEntity *pEntity){
-		SH_REMOVE_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
-		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
+		remove_hooks(pEntity);
 	}, clsname);
 	
 	if(freehndl) {
@@ -1785,8 +1814,7 @@ custom_prop_info_t::~custom_prop_info_t()
 	}
 	
 	loop_all_entities([this](CBaseEntity *pEntity){
-		SH_REMOVE_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
-		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
+		remove_hooks(pEntity);
 	}, clsname);
 	
 	for(custom_typedescription_t &desc : dataDesc) {
@@ -1801,15 +1829,14 @@ custom_prop_info_t::~custom_prop_info_t()
 	}
 }
 
-void serverclass_override_t::do_override(CBaseEntity *pEntity)
+void serverclass_override_t::do_override(CBaseEntity *pEntity, IServerNetworkable *pNet)
 {
 	if(!realcls) {
 		realcls = pEntity->GetServerClass();
 		init();
 	}
-	
-	SH_ADD_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
-	SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
+
+	add_hooks(pEntity, pNet);
 }
 
 void custom_prop_info_t::do_override(CBaseEntity *pEntity)
@@ -1834,8 +1861,7 @@ void custom_prop_info_t::do_override(CBaseEntity *pEntity)
 	
 	//zero(pEntity);
 	
-	SH_ADD_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
-	SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
+	add_hooks(pEntity);
 }
 
 IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
@@ -1854,11 +1880,18 @@ IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
 			custom_prop->do_override(pEntity);
 		}
 		if(custom_server) {
-			custom_server->do_override(pEntity);
+			custom_server->do_override(pEntity, net);
 		}
 	} else if(func != nullptr) {
 		cell_t res = 0;
-		func->PushCell(custom_prop ? custom_prop->size : 0);
+		int add_size{0};
+		if(custom_prop) {
+			add_size += custom_prop->size;
+		}
+		if(custom_server) {
+			add_size += custom_server->size;
+		}
+		func->PushCell(add_size);
 		func->PushCell(data);
 		func->Execute(&res);
 		last_cb = size;
@@ -1870,7 +1903,7 @@ IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
 				custom_prop->do_override(obj);
 			}
 			if(custom_server) {
-				custom_server->do_override(obj);
+				custom_server->do_override(obj, net);
 			}
 		}
 	}
@@ -1903,7 +1936,7 @@ IServerNetworkable *serverclass_override_t::HookCreate(const char *classname)
 	
 	CBaseEntity *pEntity = net->GetBaseEntity();
 	
-	do_override(pEntity);
+	do_override(pEntity, net);
 	
 	RETURN_META_VALUE(MRES_SUPERCEDE, net);
 }
@@ -2208,6 +2241,8 @@ cell_t CustomSendtableset_name(IPluginContext *pContext, const cell_t *params)
 	pContext->LocalToString(params[2], &name);
 
 	factory->tbl.set_name(name);
+	factory->dt_name_set = true;
+
 	return 0;
 }
 
@@ -2226,6 +2261,8 @@ cell_t CustomSendtableset_network_name(IPluginContext *pContext, const cell_t *p
 	pContext->LocalToString(params[2], &name);
 
 	factory->cls.set_name(name);
+	factory->net_name_set = true;
+
 	return 0;
 }
 
@@ -2305,11 +2342,11 @@ cell_t CustomSendtablefrom_factory(IPluginContext *pContext, const cell_t *param
 	}
 	
 	char *netname = nullptr;
-	pContext->LocalToString(params[2], &netname);
+	pContext->LocalToStringNULL(params[2], &netname);
 	
 	ServerClass *netclass = nullptr;
 	
-	if(netname[0] != '\0') {
+	if(netname && netname[0] != '\0') {
 		netclass = FindServerClass(netname);
 		if(!netclass) {
 			return pContext->ThrowNativeError("invalid netname %s", netname);
@@ -2515,8 +2552,6 @@ DETOUR_DECL_MEMBER1(DetourPvAllocEntPrivateData, void *, long, cb)
 	return DoPvAllocEntPrivateData(cb);
 }
 
-#define SOURCEHOOK_BEING_STUPID
-
 CDetour *pError = nullptr;
 
 DETOUR_DECL_STATIC2(DetourError, void, const char *, format, ..., )
@@ -2545,6 +2580,32 @@ std::unordered_map<int, ServerClass *> baselinemap{};
 void BaselineChanged(void *object, INetworkStringTable *stringTable, int stringNumber, const char *newString, const void *newData)
 {
 	
+}
+
+static ConVar *sv_parallel_packentities{nullptr};
+
+#ifdef __HAS_PROXYSEND
+bool Sample::is_allowed() const noexcept
+{
+	return server_map.empty();
+}
+#endif
+
+static CDetour *SV_ComputeClientPacks_detour{nullptr};
+
+class CFrameSnapshot;
+class CGameClient;
+DETOUR_DECL_STATIC3(SV_ComputeClientPacks, void, int, clientCount, CGameClient **, clients, CFrameSnapshot *, snapshot)
+{
+#ifndef __HAS_PROXYSEND
+	sv_parallel_packentities->SetValue(server_map.empty());
+#else
+	if(!proxysend) {
+		sv_parallel_packentities->SetValue(server_map.empty());
+	}
+#endif
+
+	DETOUR_STATIC_CALL(SV_ComputeClientPacks)(clientCount, clients, snapshot);
 }
 
 DETOUR_DECL_STATIC4(DetourSV_EnsureInstanceBaseline, void, ServerClass *, pServerClass, int, iEdict, const void *, pData, int, nBytes)
@@ -2597,7 +2658,9 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	ConVar *sv_instancebaselines = g_pCVar->FindVar("sv_instancebaselines");
 	sv_instancebaselines->SetValue(1);
 	ConVar *sv_sendtables = g_pCVar->FindVar("sv_sendtables");
-	sv_sendtables->SetValue(2);
+	sv_sendtables->SetValue(0);
+
+	sv_parallel_packentities = g_pCVar->FindVar("sv_parallel_packentities");
 
 	return true;
 }
@@ -2630,6 +2693,9 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	
 	CDetourManager::Init(g_pSM->GetScriptingEngine(), g_pGameConf);
 	
+	SV_ComputeClientPacks_detour = DETOUR_CREATE_STATIC(SV_ComputeClientPacks, "SV_ComputeClientPacks");
+	SV_ComputeClientPacks_detour->EnableDetour();
+
 	pError = DETOUR_CREATE_STATIC(DetourError, (void *)Error)
 	pError->EnableDetour();
 	
@@ -2662,6 +2728,10 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	
 	sharesys->AddDependency(myself, "sdkhooks.ext", true, true);
 	
+#ifdef __HAS_PROXYSEND
+	sharesys->AddDependency(myself, "proxysend.ext", false, true);
+#endif
+
 	plsys->AddPluginsListener(this);
 	
 	sharesys->RegisterLibrary(myself, "datamaps");
@@ -2673,7 +2743,14 @@ void Sample::SDK_OnAllLoaded()
 {
 	SM_GET_LATE_IFACE(SDKHOOKS, g_pSDKHooks);
 	SM_GET_LATE_IFACE(SDKTOOLS, g_pSDKTools);
-	
+
+#ifdef __HAS_PROXYSEND
+	SM_GET_LATE_IFACE(PROXYSEND, proxysend);
+	if(proxysend) {
+		proxysend->add_listener(this);
+	}
+#endif
+
 	g_pSDKHooks->AddEntityListener(this);
 	
 #if SOURCE_ENGINE == SE_LEFT4DEAD2
@@ -2687,6 +2764,9 @@ bool Sample::QueryRunning(char *error, size_t maxlength)
 {
 	SM_CHECK_IFACE(SDKHOOKS, g_pSDKHooks);
 	SM_CHECK_IFACE(SDKTOOLS, g_pSDKTools);
+#ifdef __HAS_PROXYSEND
+	//SM_CHECK_IFACE(PROXYSEND, proxysend);
+#endif
 	return true;
 }
 
@@ -2696,6 +2776,10 @@ bool Sample::QueryInterfaceDrop(SMInterface *pInterface)
 		return false;
 	else if(pInterface == g_pSDKTools)
 		return false;
+#ifdef __HAS_PROXYSEND
+	else if(pInterface == proxysend)
+		return false;
+#endif
 	
 	return IExtensionInterface::QueryInterfaceDrop(pInterface);
 }
@@ -2708,10 +2792,17 @@ void Sample::NotifyInterfaceDrop(SMInterface *pInterface)
 	} else if(strcmp(pInterface->GetInterfaceName(), SMINTERFACE_SDKTOOLS_NAME) == 0) {
 		g_pSDKTools = NULL;
 	}
+#ifdef __HAS_PROXYSEND
+	else if(strcmp(pInterface->GetInterfaceName(), SMINTERFACE_PROXYSEND_NAME) == 0) {
+		proxysend = NULL;
+	}
+#endif
 }
 
 void Sample::SDK_OnUnload()
 {
+	SV_ComputeClientPacks_detour->Destroy();
+
 	if(pPvAllocEntPrivateData) {
 		pPvAllocEntPrivateData->Destroy();
 	}
@@ -2741,6 +2832,15 @@ CON_COMMAND(dump_baseline, "")
 		const char *str = m_pInstanceBaselineTable->GetString(i);
 		int id = V_atoi(str);
 		META_CONPRINTF("%i = %s = %s\n", i, str, baselinemap[id] ? baselinemap[id]->GetName() : "NULL");
+	}
+}
+
+CON_COMMAND(dump_serverclasses_c, "Dumps the class list to console")
+{
+	ServerClass *pClass = g_pServerClassHead;
+	while(pClass) {
+		printf("%s\n",pClass->GetName());
+		pClass = pClass->m_pNext;
 	}
 }
 

@@ -55,6 +55,11 @@
 				"library" "engine"
 				"linux" "@_ZN11CGameServer14AssignClassIdsEv"
 			}
+			"SV_ComputeClientPacks"
+			{
+				"library" "engine"
+				"linux" "@_Z21SV_ComputeClientPacksiPP11CGameClientP14CFrameSnapshot"
+			}
 		}
 	}
 	"left4dead2"

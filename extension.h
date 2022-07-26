@@ -40,13 +40,24 @@
 #include "smsdk_ext.h"
 #include <ISDKHooks.h>
 
+#ifdef __HAS_PROXYSEND
+#include <proxysend.hpp>
+#endif
+
 /**
  * @brief Sample implementation of the SDK Extension.
  * Note: Uncomment one of the pre-defined virtual functions in order to use it.
  */
 class Sample : public SDKExtension, public IHandleTypeDispatch, public ISMEntityListener, public IPluginsListener, public IConCommandBaseAccessor
+#ifdef __HAS_PROXYSEND
+	, public proxysend::parallel_pack_listener
+#endif
 {
 public:
+#ifdef __HAS_PROXYSEND
+	bool is_allowed() const noexcept override final;
+#endif
+
 	virtual void OnHandleDestroy(HandleType_t type, void *object);
 	
 	virtual void OnEntityDestroyed(CBaseEntity *pEntity);
