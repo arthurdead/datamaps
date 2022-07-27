@@ -1339,6 +1339,28 @@ struct serverclass_override_t
 	void unexclude_prop(SendProp *prop, SendProp *realprop);
 	
 	void init();
+
+	SendProp *emplace_prop()
+	{
+		props.emplace_back();
+		SendProp *prop = &props.back();
+		update_dt();
+		return prop;
+	}
+
+	SendProp *emplace_prop(SendProp &&other)
+	{
+		props.emplace_back(std::move(other));
+		SendProp *prop = &props.back();
+		update_dt();
+		return prop;
+	}
+
+	void update_dt()
+	{
+		tbl.m_pProps = props.data();
+		tbl.m_nProps = props.size();
+	}
 	
 	IEntityFactory *fac = nullptr;
 	bool fac_is_sp = false;
@@ -1354,8 +1376,8 @@ struct serverclass_override_t
 	bool freehndl = true;
 	bool was_overriden = false;
 	bool base_class_set = false;
-	bool net_name_set = false;
-	bool dt_name_set = false;
+	bool cls_name_set = false;
+	bool tbl_name_set = false;
 	SendProp *m_pProps = nullptr;
 	int size = 0;
 	std::vector<unexclude_prop_t> exclude_props{};
@@ -1617,14 +1639,12 @@ void serverclass_override_t::init()
 {
 	props[0].SetDataTable(realcls->m_pTable);
 
-	if(!net_name_set) {
+	if(!tbl_name_set) {
 		std::string tablename{realcls->m_pTable->m_pNetTableName};
-		tablename += "_custom_";
-		tablename += std::to_string(counterid);
 		tbl.set_name(tablename);
 	}
 
-	if(!dt_name_set) {
+	if(!cls_name_set) {
 		std::string netname{realcls->m_pNetworkName};
 		netname += "_custom_";
 		netname += std::to_string(counterid);
@@ -1641,6 +1661,8 @@ void serverclass_override_t::init()
 	}
 }
 
+static ServerClass *CBaseEntity_ServerClass = nullptr;
+
 serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_)
 	: fac{fac_}, clsname{std::move(clsname_)}, realcls{realcls_}
 {
@@ -1656,16 +1678,12 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	
 	counterid = classoverridecounter++;
 	
-	props.emplace_back();
-	SendProp *prop = &props.back();
+	SendProp *prop = emplace_prop();
 	prop->m_Type = DPT_DataTable;
 	prop->m_pVarName = "baseclass";
 	prop->SetOffset(0);
 	prop->SetDataTableProxyFn(SendProxy_DataTableToDataTable);
 	prop->SetFlags(SPROP_PROXY_ALWAYS_YES|SPROP_COLLAPSIBLE);
-	
-	tbl.m_pProps = props.data();
-	tbl.m_nProps = props.size();
 	
 	cls.m_pTable = &tbl;
 	
@@ -1681,20 +1699,18 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	if(realcls) {
 		init();
 	} else {
-		props[0].SetDataTable(nullptr);
-		tbl.m_pPrecalc = nullptr;
+		SendTable *CBaseEntity_SendTable = CBaseEntity_ServerClass->m_pTable;
+
+		props[0].SetDataTable(CBaseEntity_SendTable);
+		tbl.m_pPrecalc = CBaseEntity_SendTable->m_pPrecalc;
 		
-		std::string name{"<<unknown: "};
-		name += std::to_string(counterid);
-		name += ">>";
+		tbl.set_name("DT_BaseEntity");
+		cls.set_name("CBaseEntity");
 
-		tbl.set_name(name);
-		cls.set_name(name);
+		cls.m_ClassID = CBaseEntity_ServerClass->m_ClassID;
+		classid = CBaseEntity_ServerClass->m_ClassID;
 
-		cls.m_ClassID = -1;
-		classid = -1;
-
-		cls.m_InstanceBaselineIndex = INVALID_STRING_INDEX;
+		cls.m_InstanceBaselineIndex = CBaseEntity_ServerClass->m_InstanceBaselineIndex;
 	}
 }
 
@@ -2241,7 +2257,7 @@ cell_t CustomSendtableset_name(IPluginContext *pContext, const cell_t *params)
 	pContext->LocalToString(params[2], &name);
 
 	factory->tbl.set_name(name);
-	factory->dt_name_set = true;
+	factory->tbl_name_set = true;
 
 	return 0;
 }
@@ -2261,7 +2277,7 @@ cell_t CustomSendtableset_network_name(IPluginContext *pContext, const cell_t *p
 	pContext->LocalToString(params[2], &name);
 
 	factory->cls.set_name(name);
-	factory->net_name_set = true;
+	factory->cls_name_set = true;
 
 	return 0;
 }
@@ -2552,35 +2568,7 @@ DETOUR_DECL_MEMBER1(DetourPvAllocEntPrivateData, void *, long, cb)
 	return DoPvAllocEntPrivateData(cb);
 }
 
-CDetour *pError = nullptr;
-
-DETOUR_DECL_STATIC2(DetourError, void, const char *, format, ..., )
-{
-	static char buffer[2048];
-	va_list args;
-	va_start(args, format);
-	int len = vsprintf(buffer, format, args);
-	va_end(args);
-	
-	if(strstr(buffer, "SendTable_CalcDelta")) {
-		static float lastprint = 0.0f;
-		if(lastprint <= gpGlobals->curtime) {
-			buffer[len] = '\n';
-			buffer[len+1] = '\0';
-			Warning(buffer);
-			lastprint = gpGlobals->curtime + 2.0f;
-		}
-	} else {
-		DETOUR_STATIC_CALL(DetourError)(buffer);
-	}
-}
-
 std::unordered_map<int, ServerClass *> baselinemap{};
-
-void BaselineChanged(void *object, INetworkStringTable *stringTable, int stringNumber, const char *newString, const void *newData)
-{
-	
-}
 
 static ConVar *sv_parallel_packentities{nullptr};
 
@@ -2608,11 +2596,6 @@ DETOUR_DECL_STATIC3(SV_ComputeClientPacks, void, int, clientCount, CGameClient *
 	DETOUR_STATIC_CALL(SV_ComputeClientPacks)(clientCount, clients, snapshot);
 }
 
-DETOUR_DECL_STATIC4(DetourSV_EnsureInstanceBaseline, void, ServerClass *, pServerClass, int, iEdict, const void *, pData, int, nBytes)
-{
-	DETOUR_STATIC_CALL(DetourSV_EnsureInstanceBaseline)(pServerClass, iEdict, pData, nBytes);
-}
-
 DETOUR_DECL_MEMBER0(DetourCGameServerAssignClassIds, void)
 {
 	DETOUR_MEMBER_CALL(DetourCGameServerAssignClassIds)();
@@ -2621,6 +2604,8 @@ DETOUR_DECL_MEMBER0(DetourCGameServerAssignClassIds, void)
 		it.second->cls.m_ClassID = it.second->classid;
 	}
 }
+
+static ConVar *sv_sendtables{nullptr};
 
 bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool late)
 {
@@ -2639,6 +2624,10 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	g_pServerClassTail = g_pServerClassHead;
 	while(true) {
 		baselinemap[g_pServerClassTail->m_ClassID] = g_pServerClassTail;
+
+		if(strcmp(g_pServerClassTail->m_pNetworkName, "CBaseEntity") == 0) {
+			CBaseEntity_ServerClass = g_pServerClassTail;
+		}
 		
 		if(!g_pServerClassTail->m_pNext) {
 			break;
@@ -2647,7 +2636,6 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 		g_pServerClassTail = g_pServerClassTail->m_pNext;
 	}
 	m_pInstanceBaselineTable = netstringtables->FindTable(INSTANCE_BASELINE_TABLENAME);
-	m_pInstanceBaselineTable->SetStringChangedCallback(nullptr, BaselineChanged);
 #if SOURCE_ENGINE == SE_TF2
 	server = engine->GetIServer();
 #endif
@@ -2655,11 +2643,7 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	g_pCVar = icvar;
 	ConVar_Register(0, this);
 	
-	ConVar *sv_instancebaselines = g_pCVar->FindVar("sv_instancebaselines");
-	sv_instancebaselines->SetValue(1);
-	ConVar *sv_sendtables = g_pCVar->FindVar("sv_sendtables");
-	sv_sendtables->SetValue(0);
-
+	sv_sendtables = g_pCVar->FindVar("sv_sendtables");
 	sv_parallel_packentities = g_pCVar->FindVar("sv_parallel_packentities");
 
 	return true;
@@ -2675,9 +2659,67 @@ IGameConfig *g_pGameConf = nullptr;
 
 CDetour *pPhysicsRunSpecificThink = nullptr;
 
-CDetour *pSV_EnsureInstanceBaseline = nullptr;
-
 CDetour *pCGameServerAssignClassIds = nullptr;
+
+CDetour *SendTable_GetCRC_detour = nullptr;
+CDetour *pCGameClientSendSignonData = nullptr;
+CDetour *pSVC_ClassInfoWriteToBuffer = nullptr;
+
+static bool in_send_signondata{false};
+
+DETOUR_DECL_MEMBER0(DetourCGameClientSendSignonData, bool)
+{
+	in_send_signondata = true;
+	bool ret = DETOUR_MEMBER_CALL(DetourCGameClientSendSignonData)();
+	in_send_signondata = false;
+	return ret;
+}
+
+typedef unsigned int CRC32_t;
+
+DETOUR_DECL_STATIC0(SendTable_GetCRC, CRC32_t)
+{
+	if(in_send_signondata && sv_sendtables->GetInt() == 2) {
+		return (CRC32_t)1;
+	} else {
+		return DETOUR_STATIC_CALL(SendTable_GetCRC)();
+	}
+}
+
+#include <inetmessage.h>
+
+class CNetMessage : public INetMessage
+{
+public:
+	bool				m_bReliable;	// true if message should be send reliable
+	INetChannel			*m_NetChannel;	// netchannel this message is from/for
+};
+
+class SVC_ClassInfo : public CNetMessage
+{
+public:
+	IServerMessageHandler *m_pMessageHandler;
+
+	typedef struct class_s
+	{
+		int		classID;
+		char	datatablename[256];
+		char	classname[256];
+	} class_t;
+
+	bool					m_bCreateOnClient;	// if true, client creates own SendTables & classinfos from game.dll
+	CUtlVector<class_t>		m_Classes;			
+	int						m_nNumServerClasses;
+};
+
+DETOUR_DECL_MEMBER1(DetourSVC_ClassInfoWriteToBuffer, bool, bf_write &, buffer)
+{
+	SVC_ClassInfo *msg = reinterpret_cast<SVC_ClassInfo *>(this);
+
+	//msg->m_bCreateOnClient = true;
+
+	return DETOUR_MEMBER_CALL(DetourSVC_ClassInfoWriteToBuffer)(buffer);
+}
 
 bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 {
@@ -2696,14 +2738,17 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	SV_ComputeClientPacks_detour = DETOUR_CREATE_STATIC(SV_ComputeClientPacks, "SV_ComputeClientPacks");
 	SV_ComputeClientPacks_detour->EnableDetour();
 
-	pError = DETOUR_CREATE_STATIC(DetourError, (void *)Error)
-	pError->EnableDetour();
-	
-	pSV_EnsureInstanceBaseline = DETOUR_CREATE_STATIC(DetourSV_EnsureInstanceBaseline, "SV_EnsureInstanceBaseline")
-	pSV_EnsureInstanceBaseline->EnableDetour();
+	SendTable_GetCRC_detour = DETOUR_CREATE_STATIC(SendTable_GetCRC, "SendTable_GetCRC");
+	SendTable_GetCRC_detour->EnableDetour();
 
 	pCGameServerAssignClassIds = DETOUR_CREATE_MEMBER(DetourCGameServerAssignClassIds, "CGameServer::AssignClassIds")
 	pCGameServerAssignClassIds->EnableDetour();
+
+	pCGameClientSendSignonData = DETOUR_CREATE_MEMBER(DetourCGameClientSendSignonData, "CGameClient::SendSignonData")
+	pCGameClientSendSignonData->EnableDetour();
+
+	pSVC_ClassInfoWriteToBuffer = DETOUR_CREATE_MEMBER(DetourSVC_ClassInfoWriteToBuffer, "SVC_ClassInfo::WriteToBuffer")
+	pSVC_ClassInfoWriteToBuffer->EnableDetour();
 
 #ifdef SOURCEHOOK_BEING_STUPID
 	void **vtable = *(void ***)engine;
@@ -2737,6 +2782,26 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	sharesys->RegisterLibrary(myself, "datamaps");
 
 	return true;
+}
+
+void Sample::SDK_OnUnload()
+{
+	SendTable_GetCRC_detour->Destroy();
+	pSVC_ClassInfoWriteToBuffer->Destroy();
+	pCGameClientSendSignonData->Destroy();
+	SV_ComputeClientPacks_detour->Destroy();
+	if(pPvAllocEntPrivateData) {
+		pPvAllocEntPrivateData->Destroy();
+	}
+	pPhysicsRunSpecificThink->Destroy();
+	pCGameServerAssignClassIds->Destroy();
+	g_pSDKHooks->RemoveEntityListener(this);
+	plsys->RemovePluginsListener(this);
+	handlesys->RemoveType(factory_handle, myself->GetIdentity());
+	handlesys->RemoveType(datamap_handle, myself->GetIdentity());
+	handlesys->RemoveType(removal_handle, myself->GetIdentity());
+	handlesys->RemoveType(serverclass_handle, myself->GetIdentity());
+	gameconfs->CloseGameConfigFile(g_pGameConf);
 }
 
 void Sample::SDK_OnAllLoaded()
@@ -2797,24 +2862,6 @@ void Sample::NotifyInterfaceDrop(SMInterface *pInterface)
 		proxysend = NULL;
 	}
 #endif
-}
-
-void Sample::SDK_OnUnload()
-{
-	SV_ComputeClientPacks_detour->Destroy();
-
-	if(pPvAllocEntPrivateData) {
-		pPvAllocEntPrivateData->Destroy();
-	}
-	pPhysicsRunSpecificThink->Destroy();
-	pCGameServerAssignClassIds->Destroy();
-	g_pSDKHooks->RemoveEntityListener(this);
-	plsys->RemovePluginsListener(this);
-	handlesys->RemoveType(factory_handle, myself->GetIdentity());
-	handlesys->RemoveType(datamap_handle, myself->GetIdentity());
-	handlesys->RemoveType(removal_handle, myself->GetIdentity());
-	handlesys->RemoveType(serverclass_handle, myself->GetIdentity());
-	gameconfs->CloseGameConfigFile(g_pGameConf);
 }
 
 CON_COMMAND(dump_baselinemap, "")

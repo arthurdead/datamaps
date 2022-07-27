@@ -40,11 +40,6 @@
 				"library" "server"
 				"linux" "@_ZN11CBaseEntity23PhysicsRunSpecificThinkEiMS_FvvE"
 			}
-			"SV_EnsureInstanceBaseline"
-			{
-				"library" "engine"
-				"linux" "@_Z25SV_EnsureInstanceBaselineP11ServerClassiPKvi"
-			}
 			"SV_WriteClassInfos"
 			{
 				"library" "engine"
@@ -59,6 +54,21 @@
 			{
 				"library" "engine"
 				"linux" "@_Z21SV_ComputeClientPacksiPP11CGameClientP14CFrameSnapshot"
+			}
+			"SendTable_GetCRC"
+			{
+				"library" "engine"
+				"linux" "@_Z16SendTable_GetCRCv"
+			}
+			"CGameClient::SendSignonData"
+			{
+				"library" "engine"
+				"linux" "@_ZN11CGameClient14SendSignonDataEv"
+			}
+			"SVC_ClassInfo::WriteToBuffer"
+			{
+				"library" "engine"
+				"linux" "@_ZN13SVC_ClassInfo13WriteToBufferER8bf_write"
 			}
 		}
 	}
