@@ -2736,7 +2736,6 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	CDetourManager::Init(g_pSM->GetScriptingEngine(), g_pGameConf);
 	
 	SV_ComputeClientPacks_detour = DETOUR_CREATE_STATIC(SV_ComputeClientPacks, "SV_ComputeClientPacks");
-	SV_ComputeClientPacks_detour->EnableDetour();
 
 	SendTable_GetCRC_detour = DETOUR_CREATE_STATIC(SendTable_GetCRC, "SendTable_GetCRC");
 	SendTable_GetCRC_detour->EnableDetour();
@@ -2813,6 +2812,9 @@ void Sample::SDK_OnAllLoaded()
 	SM_GET_LATE_IFACE(PROXYSEND, proxysend);
 	if(proxysend) {
 		proxysend->add_listener(this);
+		SV_ComputeClientPacks_detour->DisableDetour();
+	} else {
+		SV_ComputeClientPacks_detour->EnableDetour();
 	}
 #endif
 
@@ -2860,6 +2862,7 @@ void Sample::NotifyInterfaceDrop(SMInterface *pInterface)
 #ifdef __HAS_PROXYSEND
 	else if(strcmp(pInterface->GetInterfaceName(), SMINTERFACE_PROXYSEND_NAME) == 0) {
 		proxysend = NULL;
+		SV_ComputeClientPacks_detour->EnableDetour();
 	}
 #endif
 }
