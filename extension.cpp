@@ -1376,7 +1376,8 @@ struct serverclass_override_t
 
 	void update_offsets(int &base)
 	{
-		for(SendProp &prop : props) {
+		for(std::size_t i{1}; i < props.size(); ++i) {
+			SendProp &prop{props[i]};
 			prop.SetOffset(base + prop.GetOffset());
 		}
 		base += size;
