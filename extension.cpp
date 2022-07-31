@@ -2389,17 +2389,11 @@ cell_t CustomSendtablefrom_classname(IPluginContext *pContext, const cell_t *par
 		return pContext->ThrowNativeError("%s already has custom sendtable", classname);
 	}
 	
-	char *netname = nullptr;
-	pContext->LocalToString(params[2], &netname);
-	
-	ServerClass *netclass = nullptr;
-	
-	if(netname[0] != '\0') {
-		netclass = FindServerClass(netname);
-		if(!netclass) {
-			return pContext->ThrowNativeError("invalid netname %s", netname);
-		}
-	}
+	IServerNetworkable *net = factory->Create(classname);
+
+	ServerClass *netclass = net->GetServerClass();
+
+	factory->Destroy(net);
 	
 	std::string clsname{classname};
 	serverclass_override_t *obj = new serverclass_override_t{factory, std::move(clsname), netclass};
@@ -2427,17 +2421,11 @@ cell_t CustomSendtablefrom_factory(IPluginContext *pContext, const cell_t *param
 		return pContext->ThrowNativeError("%s already has custom sendtable", name.c_str());
 	}
 	
-	char *netname = nullptr;
-	pContext->LocalToStringNULL(params[2], &netname);
-	
-	ServerClass *netclass = nullptr;
-	
-	if(netname && netname[0] != '\0') {
-		netclass = FindServerClass(netname);
-		if(!netclass) {
-			return pContext->ThrowNativeError("invalid netname %s", netname);
-		}
-	}
+	IServerNetworkable *net = factory->Create(factory->name.c_str());
+
+	ServerClass *netclass = net->GetServerClass();
+
+	factory->Destroy(net);
 	
 	serverclass_override_t *obj = new serverclass_override_t{factory, std::move(name), netclass};
 	Handle_t hndl = handlesys->CreateHandle(serverclass_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
