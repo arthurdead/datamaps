@@ -1,8 +1,8 @@
-#include <datamap.h>
-#include <server_class.h>
-
 #define private public
 #include <core/HalfLife2.h>
+
+#include <datamap.h>
+#include <server_class.h>
 
 extern IGameHelpers *gamehelpers;
 

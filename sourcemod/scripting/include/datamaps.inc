@@ -77,6 +77,10 @@ enum custom_prop_type
 	custom_prop_variant,
 };
 
+#define HIGH_DEFAULT -121121.121121
+
+#define SPROP_NOSCALE (1 << 2)
+
 methodmap CustomSendtable < Handle
 {
 	public static native CustomSendtable from_classname(const char[] classname, const char[] netname = NULL_STRING);
@@ -88,6 +92,8 @@ methodmap CustomSendtable < Handle
 
 	public native void set_name(const char[] name);
 	public native void set_network_name(const char[] name);
+
+	public native void add_prop_float(const char[] name, float low_value = 0.0, float high_value = HIGH_DEFAULT, int bits = 32, int flags = 0);
 };
 
 methodmap CustomDatamap < Handle

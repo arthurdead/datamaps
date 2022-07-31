@@ -48,12 +48,13 @@
 #define USE_NAV_MESH
 #define RAD_TELEMETRY_DISABLED
 
-#include "extension.h"
-#include <ISDKTools.h>
-#include <CDetour/detours.h>
 #include <string>
 #include <vector>
 #include <unordered_map>
+
+#include "extension.h"
+#include <ISDKTools.h>
+#include <CDetour/detours.h>
 #include <mathlib/vmatrix.h>
 #include <toolframework/itoolentity.h>
 #include <ehandle.h>
@@ -776,6 +777,25 @@ SH_DECL_HOOK0(CBaseEntity, GetDataDescMap, SH_NOATTRIB, 0, datamap_t *);
 
 int last_cb = 0;
 
+enum custom_prop_type
+{
+	custom_prop_int,
+	custom_prop_float,
+	custom_prop_bool,
+	custom_prop_ehandle,
+	custom_prop_vector,
+	custom_prop_string,
+	custom_prop_color32,
+	custom_prop_time,
+	custom_prop_tick,
+	custom_prop_short,
+	custom_prop_char,
+	custom_prop_modelname,
+	custom_prop_modelindex,
+	custom_prop_soundname,
+	custom_prop_variant,
+};
+
 struct custom_prop_info_t
 {
 	bool was_overriden = false;
@@ -785,7 +805,6 @@ struct custom_prop_info_t
 	using dataDesc_t = std::vector<custom_typedescription_t>;
 	dataDesc_t dataDesc{};
 	int size = 0;
-	int base = 0;
 	std::string clsname{};
 	Handle_t hndl = BAD_HANDLE;
 	IPluginContext *pContext = nullptr;
@@ -935,11 +954,12 @@ struct custom_prop_info_t
 		}
 	}
 	
-	void update_offsets()
+	void update_offsets(int &base)
 	{
 		for(custom_typedescription_t &desc : dataDesc) {
 			desc.get_offset() += base;
 		}
+		base += size;
 	}
 	
 	bool has_prop(const std::string &name)
@@ -982,9 +1002,6 @@ struct custom_prop_info_t
 		desc.set_name(name);
 		
 		desc.get_offset() = size;
-		if(was_overriden && base != 0) {
-			desc.get_offset() += base;
-		}
 		desc.fieldSize = num;
 		
 		desc.fieldType = type;
@@ -1065,7 +1082,7 @@ struct custom_prop_info_t
 		SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
 	}
 	
-	void do_override(CBaseEntity *pEntity);
+	void do_override(int &base, CBaseEntity *pEntity);
 	
 	IServerNetworkable *HookCreate(const char *classname);
 };
@@ -1296,6 +1313,10 @@ public:
 	}
 };
 
+extern float AssignRangeMultiplier( int nBits, double range );
+
+static const CStandardSendProxies *std_proxies{nullptr};
+
 struct serverclass_override_t
 {
 	serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_);
@@ -1330,7 +1351,7 @@ struct serverclass_override_t
 		SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
 	}
 	
-	void do_override(CBaseEntity *pEntity, IServerNetworkable *pNet);
+	void do_override(int &base, CBaseEntity *pEntity, IServerNetworkable *pNet);
 	
 	void remove_base_line();
 	
@@ -1342,16 +1363,7 @@ struct serverclass_override_t
 
 	SendProp *emplace_prop()
 	{
-		props.emplace_back();
-		SendProp *prop = &props.back();
-		update_dt();
-		return prop;
-	}
-
-	SendProp *emplace_prop(SendProp &&other)
-	{
-		props.emplace_back(std::move(other));
-		SendProp *prop = &props.back();
+		SendProp *prop = &props.emplace_back();
 		update_dt();
 		return prop;
 	}
@@ -1360,6 +1372,58 @@ struct serverclass_override_t
 	{
 		tbl.m_pProps = props.data();
 		tbl.m_nProps = props.size();
+	}
+
+	void update_offsets(int &base)
+	{
+		for(SendProp &prop : props) {
+			prop.SetOffset(base + prop.GetOffset());
+		}
+		base += size;
+	}
+
+	std::vector<std::unique_ptr<std::string>> prop_names;
+
+	void add_prop_float(std::string &&name, float fLowValue, float fHighValue, int nBits, int flags)
+	{
+		SendProp &prop{*emplace_prop()};
+
+		prop.SetOffset(size);
+
+		prop.m_pVarName = prop_names.emplace_back(new std::string{std::move(name)}).get()->c_str();
+
+		prop.SetFlags(flags);
+
+		prop.SetProxyFn(std_proxies->m_FloatToFloat);
+
+		if(nBits <= 0 || nBits == 32) {
+			flags |= SPROP_NOSCALE;
+			fLowValue = 0.0f;
+			fHighValue = 0.0f;
+		} else {
+			if(fHighValue == HIGH_DEFAULT) {
+				fHighValue = (1 << nBits);
+			}
+
+			if(flags & SPROP_ROUNDDOWN) {
+				fHighValue = fHighValue - ((fHighValue - fLowValue) / (1 << nBits));
+			} else if(flags & SPROP_ROUNDUP) {
+				fLowValue = fLowValue + ((fHighValue - fLowValue) / (1 << nBits));
+			}
+		}
+
+		if(prop.GetFlags() & (SPROP_COORD|SPROP_NOSCALE|SPROP_NORMAL|SPROP_COORD_MP|SPROP_COORD_MP_LOWPRECISION|SPROP_COORD_MP_INTEGRAL)) {
+			prop.m_nBits = 0;
+		} else {
+			prop.m_nBits = nBits;
+		}
+
+		prop.m_fLowValue = fLowValue;
+		prop.m_fHighValue = fHighValue;
+		prop.m_fHighLowMul = AssignRangeMultiplier(prop.m_nBits, prop.m_fHighValue - prop.m_fLowValue);
+		prop.m_Type = DPT_Float;
+
+		size += sizeof(float);
 	}
 	
 	IEntityFactory *fac = nullptr;
@@ -1845,17 +1909,22 @@ custom_prop_info_t::~custom_prop_info_t()
 	}
 }
 
-void serverclass_override_t::do_override(CBaseEntity *pEntity, IServerNetworkable *pNet)
+void serverclass_override_t::do_override(int &base, CBaseEntity *pEntity, IServerNetworkable *pNet)
 {
 	if(!realcls) {
 		realcls = pEntity->GetServerClass();
 		init();
 	}
 
+	if(!was_overriden) {
+		update_offsets(base);
+		was_overriden = true;
+	}
+
 	add_hooks(pEntity, pNet);
 }
 
-void custom_prop_info_t::do_override(CBaseEntity *pEntity)
+void custom_prop_info_t::do_override(int &base, CBaseEntity *pEntity)
 {
 	if(!was_overriden) {
 		datamap_t *basemap = gamehelpers->GetDataMap(pEntity);
@@ -1869,8 +1938,7 @@ void custom_prop_info_t::do_override(CBaseEntity *pEntity)
 		map.set_name(mapname);
 		map.baseMap = basemap;
 		
-		base = last_cb;
-		update_offsets();
+		update_offsets(base);
 		
 		was_overriden = true;
 	}
@@ -1885,18 +1953,18 @@ IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
 	IServerNetworkable *net = nullptr;
 	
 	if(based != nullptr) {
-		last_cb = based->GetEntitySize();
 		curr_data_info = custom_prop;
 		curr_server_info = custom_server;
 		net = based->Create(pClassName);
 		curr_data_info = nullptr;
 		curr_server_info = nullptr;
 		CBaseEntity *pEntity = net->GetBaseEntity();
+		last_cb = based->GetEntitySize();
 		if(custom_prop) {
-			custom_prop->do_override(pEntity);
+			custom_prop->do_override(last_cb, pEntity);
 		}
 		if(custom_server) {
-			custom_server->do_override(pEntity, net);
+			custom_server->do_override(last_cb, pEntity, net);
 		}
 	} else if(func != nullptr) {
 		cell_t res = 0;
@@ -1916,10 +1984,10 @@ IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
 			obj->PostConstructor(pClassName);
 			net = obj->GetNetworkable();
 			if(custom_prop) {
-				custom_prop->do_override(obj);
+				custom_prop->do_override(last_cb, obj);
 			}
 			if(custom_server) {
-				custom_server->do_override(obj, net);
+				custom_server->do_override(last_cb, obj, net);
 			}
 		}
 	}
@@ -1937,7 +2005,8 @@ IServerNetworkable *custom_prop_info_t::HookCreate(const char *classname)
 	
 	CBaseEntity *pEntity = net->GetBaseEntity();
 	
-	do_override(pEntity);
+	int base = fac->GetEntitySize();
+	do_override(base, pEntity);
 	
 	RETURN_META_VALUE(MRES_SUPERCEDE, net);
 }
@@ -1952,7 +2021,8 @@ IServerNetworkable *serverclass_override_t::HookCreate(const char *classname)
 	
 	CBaseEntity *pEntity = net->GetBaseEntity();
 	
-	do_override(pEntity, net);
+	int base = fac->GetEntitySize();
+	do_override(base, pEntity, net);
 	
 	RETURN_META_VALUE(MRES_SUPERCEDE, net);
 }
@@ -2049,25 +2119,6 @@ cell_t CustomDatamapadd_prop(IPluginContext *pContext, const cell_t *params)
 	
 	fieldtype_t type = FIELD_VOID;
 	
-	enum custom_prop_type
-	{
-		custom_prop_int,
-		custom_prop_float,
-		custom_prop_bool,
-		custom_prop_ehandle,
-		custom_prop_vector,
-		custom_prop_string,
-		custom_prop_color32,
-		custom_prop_time,
-		custom_prop_tick,
-		custom_prop_short,
-		custom_prop_char,
-		custom_prop_modelname,
-		custom_prop_modelindex,
-		custom_prop_soundname,
-		custom_prop_variant,
-	};
-	
 	int flags = 0;
 	
 	switch((custom_prop_type)params[3]) {
@@ -2092,6 +2143,25 @@ cell_t CustomDatamapadd_prop(IPluginContext *pContext, const cell_t *params)
 	}
 	
 	obj->add_prop(name, type, params[4], flags);
+	return 0;
+}
+
+cell_t CustomSendtableadd_prop_float(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	serverclass_override_t *obj = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&obj);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	char *name_ptr = nullptr;
+	pContext->LocalToString(params[2], &name_ptr);
+	
+	std::string name{name_ptr};
+	obj->add_prop_float(std::move(name), sp_ctof(params[3]), sp_ctof(params[4]), params[5], params[6]);
 	return 0;
 }
 
@@ -2510,6 +2580,7 @@ sp_nativeinfo_t natives[] =
 	{"CustomSendtable.set_base_class", CustomSendtableset_base_class},
 	{"CustomSendtable.set_name", CustomSendtableset_name},
 	{"CustomSendtable.set_network_name", CustomSendtableset_network_name},
+	{"CustomSendtable.add_prop_float", CustomSendtableadd_prop_float},
 	{"CustomDatamap.from_classname", CustomDatamapfrom_classname},
 	{"CustomDatamap.from_factory", CustomDatamapfrom_factory},
 	{"CustomDatamap.add_prop", CustomDatamapadd_prop},
@@ -2642,6 +2713,8 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	GET_V_IFACE_CURRENT(GetEngineFactory, icvar, ICvar, CVAR_INTERFACE_VERSION);
 	g_pCVar = icvar;
 	ConVar_Register(0, this);
+
+	std_proxies = gamedll->GetStandardSendProxies();
 	
 	sv_sendtables = g_pCVar->FindVar("sv_sendtables");
 	sv_parallel_packentities = g_pCVar->FindVar("sv_parallel_packentities");
