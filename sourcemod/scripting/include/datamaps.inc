@@ -111,6 +111,8 @@ native void SetEntityThink(int entity, datamaps_functions func, float time, any 
 native void SetEntityNextThink(int entity, float time);
 native void SetEntityNextThinkContext(int entity, float time, const char[] context = "");
 
+native Address AllocPooledString(const char[] str);
+
 #if !defined REQUIRE_EXTENSIONS
 public void __ext_datamaps_SetNTVOptional()
 {

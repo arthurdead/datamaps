@@ -2553,6 +2553,16 @@ static cell_t SetEntityNextThinkContext(IPluginContext *pContext, const cell_t *
 	return 0;
 }
 
+static cell_t native_AllocPooledString(IPluginContext *pContext, const cell_t *params)
+{
+	char *context = nullptr;
+	pContext->LocalToString(params[1], &context);
+
+	string_t id = AllocPooledString(context);
+
+	return *reinterpret_cast<cell_t *>(&id);
+}
+
 sp_nativeinfo_t natives[] =
 {
 	{"IEntityFactory.Custom.get", IEntityFactoryCustomget},
@@ -2578,6 +2588,7 @@ sp_nativeinfo_t natives[] =
 	{"SetEntityThink", SetEntityThink},
 	{"SetEntityNextThink", SetEntityNextThink},
 	{"SetEntityNextThinkContext", SetEntityNextThinkContext},
+	{"AllocPooledString", native_AllocPooledString},
 	{NULL, NULL}
 };
 
