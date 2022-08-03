@@ -298,32 +298,37 @@ struct callback_holder_t
 	std::unordered_map<std::string, callback_t> thinkctxs{};
 	
 	int ref = -1;
-	CBaseEntity *pEntity_ = nullptr;
 	IdentityToken_t *owner = nullptr;
 	bool erase = true;
 	
-	callback_holder_t(CBaseEntity *pEntity, IdentityToken_t *owner_);
+	callback_holder_t(CBaseEntity *pEntity, int ref_, IdentityToken_t *owner_);
 	~callback_holder_t();
 	
 	void dtor(CBaseEntity *pEntity);
 
-	void HookEntityDtor()
-	{
-		CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
-		dtor(pEntity);
-		RETURN_META(MRES_IGNORED);
-	}
+	void HookEntityDtor();
 };
 
 using callback_holder_map_t = std::unordered_map<int, callback_holder_t *>;
 callback_holder_map_t callbackmap{};
 
-callback_holder_t::callback_holder_t(CBaseEntity *pEntity, IdentityToken_t *owner_)
-	: pEntity_{pEntity}, owner{owner_}, ref{gamehelpers->EntityToBCompatRef(pEntity)}
+void callback_holder_t::HookEntityDtor()
 {
-	SH_ADD_MANUALHOOK(GenericDtor, pEntity_, SH_MEMBER(this, &callback_holder_t::HookEntityDtor), false);
+	CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
+	int this_ref = gamehelpers->EntityToBCompatRef(pEntity);
+	dtor(pEntity);
+	callbackmap.erase(this_ref);
+	erase = false;
+	delete this;
+	RETURN_META(MRES_IGNORED);
+}
 
-	callbackmap[ref] = this;
+callback_holder_t::callback_holder_t(CBaseEntity *pEntity, int ref_, IdentityToken_t *owner_)
+	: owner{owner_}, ref{ref_}
+{
+	SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &callback_holder_t::HookEntityDtor), false);
+
+	callbackmap.emplace(ref, this);
 }
 
 callback_holder_t::~callback_holder_t()
@@ -528,28 +533,54 @@ public:
 	{
 		int this_ref = gamehelpers->EntityToBCompatRef(this);
 
-		callback_holder_t *holder = callbackmap[this_ref];
-		
-		if(m_iCurrentThinkContext >= 0 && m_iCurrentThinkContext < holder->thinkctxs.size()) {
-			auto it = holder->thinkctxs.begin();
-			std::advance(it, m_iCurrentThinkContext);
-			
-			IPluginFunction *func = it->second.callback;
-			func->PushCell(this_ref);
-			func->PushString(it->first.c_str());
-			func->PushCell(it->second.data);
-			cell_t res = 0;
-			func->Execute(&res);
+		auto cb_it{callbackmap.find(this_ref)};
+		if(cb_it == callbackmap.cend()) {
+			return;
 		}
+
+		callback_holder_t *holder = cb_it->second;
+		if(!holder) {
+			return;
+		}
+		
+		if(m_iCurrentThinkContext < 0 || m_iCurrentThinkContext >= holder->thinkctxs.size()) {
+			return;
+		}
+
+		auto fnc_it = holder->thinkctxs.begin();
+		std::advance(fnc_it, m_iCurrentThinkContext);
+		
+		IPluginFunction *func = fnc_it->second.callback;
+		if(!func) {
+			return;
+		}
+
+		func->PushCell(this_ref);
+		func->PushString(fnc_it->first.c_str());
+		func->PushCell(fnc_it->second.data);
+		cell_t res = 0;
+		func->Execute(&res);
 	}
 	
 	void PluginThink()
 	{
 		int this_ref = gamehelpers->EntityToBCompatRef(this);
 
-		callback_holder_t *holder = callbackmap[this_ref];
+		auto it{callbackmap.find(this_ref)};
+		if(it == callbackmap.cend()) {
+			return;
+		}
+
+		callback_holder_t *holder = it->second;
+		if(!holder) {
+			return;
+		}
 		
 		IPluginFunction *func = holder->think.callback;
+		if(!func) {
+			return;
+		}
+
 		func->PushCell(this_ref);
 		func->PushCell(holder->think.data);
 		cell_t res = 0;
@@ -561,13 +592,15 @@ void callback_holder_t::dtor(CBaseEntity *pEntity)
 {
 	if(think.callback != nullptr) {
 		pEntity->SetThink(nullptr);
+		think.callback = nullptr;
 	}
 	
 	for(auto &it : thinkctxs) {
 		pEntity->SetContextThink(nullptr, 0.0f, it.first.c_str());
 	}
-	
-	delete this;
+	thinkctxs.clear();
+
+	SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &callback_holder_t::HookEntityDtor), false);
 }
 
 int CBaseEntity::m_iCurrentThinkContext = -1;
@@ -2472,8 +2505,12 @@ static cell_t SetEntityContextThink(IPluginContext *pContext, const cell_t *para
 	callback_holder_map_t::iterator it{callbackmap.find(ref)};
 	if(it != callbackmap.end()) {
 		holder = it->second;
+
+		if(holder->owner != pContext->GetIdentity()) {
+			return pContext->ThrowNativeError("Another plugin already set this entity think");
+		}
 	} else {
-		holder = new callback_holder_t{pEntity, pContext->GetIdentity()};
+		holder = new callback_holder_t{pEntity, ref, pContext->GetIdentity()};
 	}
 	
 	char *context = nullptr;
@@ -2501,12 +2538,16 @@ static cell_t SetEntityThink(IPluginContext *pContext, const cell_t *params)
 	callback_holder_map_t::iterator it{callbackmap.find(ref)};
 	if(it != callbackmap.end()) {
 		holder = it->second;
+
+		if(holder->owner != pContext->GetIdentity()) {
+			return pContext->ThrowNativeError("Another plugin already set this entity think");
+		}
 	} else {
-		holder = new callback_holder_t{pEntity, pContext->GetIdentity()};
+		holder = new callback_holder_t{pEntity, ref, pContext->GetIdentity()};
 	}
 	
 	holder->think.callback = pContext->GetFunctionById(params[2]);
-	holder->think.data = params[4];
+	holder->think.data = params[3];
 	
 	pEntity->SetThink(&CBaseEntity::PluginThink);
 	
@@ -2596,10 +2637,16 @@ void Sample::OnPluginUnloaded(IPlugin *plugin)
 {
 	callback_holder_map_t::iterator it{callbackmap.begin()};
 	while(it != callbackmap.end()) {
-		if(it->second->owner == plugin->GetIdentity()) {
-			it->second->erase = false;
-			callbackmap.erase(it);
-			it->second->dtor(it->second->pEntity_);
+		callback_holder_t *holder = it->second;
+
+		if(holder->owner == plugin->GetIdentity()) {
+			CBaseEntity *pEntity = gamehelpers->ReferenceToEntity(holder->ref);
+			if(pEntity) {
+				holder->dtor(pEntity);
+			}
+			holder->erase = false;
+			delete holder;
+			it = callbackmap.erase(it);
 			continue;
 		}
 		

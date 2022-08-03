@@ -107,7 +107,7 @@ methodmap CustomDatamap < Handle
 };
 
 native void SetEntityContextThink(int entity, datamaps_functions func, float time, const char[] context, any data = 0);
-native void SetEntityThink(int entity, datamaps_functions func, float time, any data = 0);
+native void SetEntityThink(int entity, datamaps_functions func, any data = 0);
 native void SetEntityNextThink(int entity, float time);
 native void SetEntityNextThinkContext(int entity, float time, const char[] context = "");
 
