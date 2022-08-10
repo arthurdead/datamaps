@@ -1350,6 +1350,8 @@ extern float AssignRangeMultiplier( int nBits, double range );
 
 static const CStandardSendProxies *std_proxies{nullptr};
 
+#define SPROP_HACK_ABSOFFSET (1 << SPROP_NUMFLAGBITS)
+
 struct serverclass_override_t
 {
 	serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_);
@@ -1411,7 +1413,13 @@ struct serverclass_override_t
 	{
 		for(std::size_t i{1}; i < props.size(); ++i) {
 			SendProp &prop{props[i]};
-			prop.SetOffset(base + prop.GetOffset());
+			int flags = prop.GetFlags();
+			if(flags & SPROP_HACK_ABSOFFSET) {
+				flags &= ~SPROP_HACK_ABSOFFSET;
+				//prop.SetFlags(flags);
+			} else {
+				prop.SetOffset(base + prop.GetOffset());
+			}
 		}
 		base += size;
 	}
@@ -1459,7 +1467,50 @@ struct serverclass_override_t
 
 		size += sizeof(float);
 	}
-	
+
+	void add_prop_int(std::string &&name, int sizeofVar, int nBits, int flags, int offset)
+	{
+		SendProp &prop{*emplace_prop()};
+
+		if(offset == -1) {
+			prop.SetOffset(size);
+		} else {
+			prop.SetOffset(offset);
+		}
+
+		prop.m_pVarName = prop_names.emplace_back(new std::string{std::move(name)}).get()->c_str();
+
+		if(offset == -1) {
+			prop.SetFlags(flags);
+		} else {
+			prop.SetFlags(flags|SPROP_HACK_ABSOFFSET);
+		}
+
+		switch(sizeofVar) {
+			case 1: {
+				prop.SetProxyFn(flags & SPROP_UNSIGNED ? std_proxies->m_UInt8ToInt32 : std_proxies->m_Int8ToInt32);
+			}
+			case 2: {
+				prop.SetProxyFn(flags & SPROP_UNSIGNED ? std_proxies->m_UInt16ToInt32 : std_proxies->m_Int16ToInt32);
+			}
+			case 4: {
+				prop.SetProxyFn(flags & SPROP_UNSIGNED ? std_proxies->m_UInt32ToInt32 : std_proxies->m_Int32ToInt32);
+			}
+		}
+
+		if(nBits <= 0) {
+			nBits = sizeofVar * 8;
+		}
+
+		prop.m_nBits = nBits;
+
+		prop.m_Type = DPT_Int;
+
+		if(offset == -1) {
+			size += sizeofVar;
+		}
+	}
+
 	IEntityFactory *fac = nullptr;
 	bool fac_is_sp = false;
 	custom_ServerClass cls{};
@@ -2199,6 +2250,25 @@ cell_t CustomSendtableadd_prop_float(IPluginContext *pContext, const cell_t *par
 	return 0;
 }
 
+cell_t CustomSendtableadd_prop_int(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	serverclass_override_t *obj = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&obj);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	char *name_ptr = nullptr;
+	pContext->LocalToString(params[2], &name_ptr);
+	
+	std::string name{name_ptr};
+	obj->add_prop_int(std::move(name), params[3], params[4], params[5], params[6]);
+	return 0;
+}
+
 cell_t CustomDatamapset_name(IPluginContext *pContext, const cell_t *params)
 {
 	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
@@ -2409,6 +2479,8 @@ cell_t CustomSendtableoverride_with(IPluginContext *pContext, const cell_t *para
 	return 0;
 }
 
+static ServerClass *CTFPlayer_ServerClass{nullptr};
+
 cell_t CustomSendtablefrom_classname(IPluginContext *pContext, const cell_t *params)
 {
 	char *classname = nullptr;
@@ -2422,12 +2494,18 @@ cell_t CustomSendtablefrom_classname(IPluginContext *pContext, const cell_t *par
 	if(server_map.find(classname) != server_map.end()) {
 		return pContext->ThrowNativeError("%s already has custom sendtable", classname);
 	}
+
+	ServerClass *netclass = nullptr;
 	
-	IServerNetworkable *net = factory->Create(classname);
+	if(strcmp(classname, "player") == 0) {
+		netclass = CTFPlayer_ServerClass;
+	} else {
+		IServerNetworkable *net = factory->Create(classname);
 
-	ServerClass *netclass = net->GetServerClass();
+		netclass = net->GetServerClass();
 
-	factory->Destroy(net);
+		factory->Destroy(net);
+	}
 	
 	std::string clsname{classname};
 	serverclass_override_t *obj = new serverclass_override_t{factory, std::move(clsname), netclass};
@@ -2621,6 +2699,7 @@ sp_nativeinfo_t natives[] =
 	{"CustomSendtable.set_name", CustomSendtableset_name},
 	{"CustomSendtable.set_network_name", CustomSendtableset_network_name},
 	{"CustomSendtable.add_prop_float", CustomSendtableadd_prop_float},
+	{"CustomSendtable.add_prop_int", CustomSendtableadd_prop_int},
 	{"CustomDatamap.from_classname", CustomDatamapfrom_classname},
 	{"CustomDatamap.from_factory", CustomDatamapfrom_factory},
 	{"CustomDatamap.add_prop", CustomDatamapadd_prop},
@@ -2745,6 +2824,8 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 
 		if(strcmp(g_pServerClassTail->m_pNetworkName, "CBaseEntity") == 0) {
 			CBaseEntity_ServerClass = g_pServerClassTail;
+		} else if(strcmp(g_pServerClassTail->m_pNetworkName, "CTFPlayer") == 0) {
+			CTFPlayer_ServerClass = g_pServerClassTail;
 		}
 		
 		if(!g_pServerClassTail->m_pNext) {

@@ -3,17 +3,9 @@
 #endif
 #define datamaps_included
 
-typeset datamaps_functions
-{
-	//EntityFactoryDictionary.register_function
-	function Address (int size_modifier, any data);
-
-	//SetEntityContextThink
-	function void (int entity, const char[] context, any data);
-
-	//SetEntityThink
-	function void (int entity, any data);
-};
+typedef entityalloc_func_t = function Address (int size_modifier, any data);
+typedef ctxthink_func_t = function void (int entity, const char[] context, any data);
+typedef think_func_t = function void (int entity, any data);
 
 methodmap IEntityFactory
 {
@@ -53,7 +45,7 @@ methodmap EntityFactoryDictionary
 			return null;
 		}
 	}
-	public static native CustomEntityFactory register_function(const char[] classname, datamaps_functions func, int size, any data = 0);
+	public static native CustomEntityFactory register_function(const char[] classname, entityalloc_func_t func, int size, any data = 0);
 
 	public static native Handle remove(const char[] classname);
 };
@@ -79,7 +71,8 @@ enum custom_prop_type
 
 #define HIGH_DEFAULT -121121.121121
 
-#define SPROP_NOSCALE (1 << 2)
+#define SPROP_UNSIGNED (1 << 0)
+#define SPROP_NOSCALE  (1 << 2)
 
 methodmap CustomSendtable < Handle
 {
@@ -94,6 +87,7 @@ methodmap CustomSendtable < Handle
 	public native void set_network_name(const char[] name);
 
 	public native void add_prop_float(const char[] name, float low_value = 0.0, float high_value = HIGH_DEFAULT, int bits = 32, int flags = 0);
+	public native void add_prop_int(const char[] name, int size, int bits = -1, int flags = 0, int offset = -1);
 };
 
 methodmap CustomDatamap < Handle
@@ -106,8 +100,8 @@ methodmap CustomDatamap < Handle
 	public native void add_prop(const char[] name, custom_prop_type type, int num = 1);
 };
 
-native void SetEntityContextThink(int entity, datamaps_functions func, float time, const char[] context, any data = 0);
-native void SetEntityThink(int entity, datamaps_functions func, any data = 0);
+native void SetEntityContextThink(int entity, ctxthink_func_t func, float time, const char[] context, any data = 0);
+native void SetEntityThink(int entity, think_func_t func, any data = 0);
 native void SetEntityNextThink(int entity, float time);
 native void SetEntityNextThinkContext(int entity, float time, const char[] context = "");
 
