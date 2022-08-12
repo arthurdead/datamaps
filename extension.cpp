@@ -2504,7 +2504,7 @@ cell_t CustomSendtablefrom_classname(IPluginContext *pContext, const cell_t *par
 
 		netclass = net->GetServerClass();
 
-		factory->Destroy(net);
+		RemoveEntity(net->GetBaseEntity());
 	}
 	
 	std::string clsname{classname};
@@ -2537,7 +2537,7 @@ cell_t CustomSendtablefrom_factory(IPluginContext *pContext, const cell_t *param
 
 	ServerClass *netclass = net->GetServerClass();
 
-	factory->Destroy(net);
+	RemoveEntity(net->GetBaseEntity());
 	
 	serverclass_override_t *obj = new serverclass_override_t{factory, std::move(name), netclass};
 	Handle_t hndl = handlesys->CreateHandle(serverclass_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
