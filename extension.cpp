@@ -280,63 +280,10 @@ string_t AllocPooledString(const char *szContext)
 	return (void_to_func<string_t(*)(const char *)>(AllocPooledStringPtr))(szContext);
 }
 
-#define SetThink( a ) ThinkSet( static_cast <void (CBaseEntity::*)(void)> (a), 0, NULL )
+#define SetThink( a, b ) ThinkSet( static_cast <void (CBaseEntity::*)(void)> (a), (b), NULL )
 #define SetContextThink( a, b, context ) ThinkSet( static_cast <void (CBaseEntity::*)(void)> (a), (b), context )
 
 SH_DECL_MANUALHOOK0_void(GenericDtor, 1, 0, 0)
-
-struct callback_holder_t
-{
-	struct callback_t
-	{
-		IPluginFunction *callback = nullptr;
-		cell_t data = 0;
-	};
-	
-	callback_t think{};
-	
-	std::unordered_map<std::string, callback_t> thinkctxs{};
-	
-	int ref = -1;
-	IdentityToken_t *owner = nullptr;
-	bool erase = true;
-	
-	callback_holder_t(CBaseEntity *pEntity, int ref_, IdentityToken_t *owner_);
-	~callback_holder_t();
-	
-	void dtor(CBaseEntity *pEntity);
-
-	void HookEntityDtor();
-};
-
-using callback_holder_map_t = std::unordered_map<int, callback_holder_t *>;
-callback_holder_map_t callbackmap{};
-
-void callback_holder_t::HookEntityDtor()
-{
-	CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
-	int this_ref = gamehelpers->EntityToBCompatRef(pEntity);
-	dtor(pEntity);
-	callbackmap.erase(this_ref);
-	erase = false;
-	delete this;
-	RETURN_META(MRES_HANDLED);
-}
-
-callback_holder_t::callback_holder_t(CBaseEntity *pEntity, int ref_, IdentityToken_t *owner_)
-	: owner{owner_}, ref{ref_}
-{
-	SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &callback_holder_t::HookEntityDtor), false);
-
-	callbackmap.emplace(ref, this);
-}
-
-callback_holder_t::~callback_holder_t()
-{
-	if(erase) {
-		callbackmap.erase(ref);
-	}
-}
 
 class CBaseEntity : public IServerEntity
 {
@@ -375,6 +322,17 @@ public:
 		}
 		
 		return *(m_aThinkFunctions_t *)((unsigned char *)this + m_aThinkFunctionsOffset);
+	}
+
+	m_pfnThink_t GetThinkFuncContext( const char *pszContext )
+	{
+		for ( int i = 0; i < GetAThinkFuncstions().Size(); i++ )
+		{
+			if ( !Q_strncmp( STRING( GetAThinkFuncstions()[i].m_iszContext ), pszContext, MAX_CONTEXT_LENGTH ) )
+				return GetAThinkFuncstions()[i].m_pfnThink;
+		}
+
+		return nullptr;
 	}
 	
 	int &GetIEFlags()
@@ -529,75 +487,155 @@ public:
 	
 	static int m_iCurrentThinkContext;
 	
-	void PluginThinkContext()
+	void PluginThinkContext();
+	void PluginThink();
+};
+
+struct callback_holder_t
+{
+	struct callback_t
 	{
-		int this_ref = gamehelpers->EntityToBCompatRef(this);
+		IChangeableForward *fwd = nullptr;
+		CBaseEntity::m_pfnThink_t old_think = nullptr;
+	};
+	
+	callback_t think{};
+	
+	std::unordered_map<std::string, callback_t> thinkctxs{};
+	
+	int ref = -1;
+	std::vector<IdentityToken_t *> owners{};
+	bool erase = true;
+	
+	callback_holder_t(CBaseEntity *pEntity, int ref_);
+	~callback_holder_t();
+	
+	void dtor(CBaseEntity *pEntity);
 
-		auto cb_it{callbackmap.find(this_ref)};
-		if(cb_it == callbackmap.cend()) {
-			return;
-		}
+	void HookEntityDtor();
+};
 
-		callback_holder_t *holder = cb_it->second;
-		if(!holder) {
-			return;
-		}
-		
-		if(m_iCurrentThinkContext < 0 || m_iCurrentThinkContext >= holder->thinkctxs.size()) {
-			return;
-		}
+using callback_holder_map_t = std::unordered_map<int, callback_holder_t *>;
+callback_holder_map_t callbackmap{};
 
-		auto fnc_it = holder->thinkctxs.begin();
-		std::advance(fnc_it, m_iCurrentThinkContext);
-		
-		IPluginFunction *func = fnc_it->second.callback;
-		if(!func) {
-			return;
-		}
+void CBaseEntity::PluginThinkContext()
+{
+	int this_ref = gamehelpers->EntityToBCompatRef(this);
 
-		func->PushCell(this_ref);
-		func->PushString(fnc_it->first.c_str());
-		func->PushCell(fnc_it->second.data);
-		cell_t res = 0;
-		func->Execute(&res);
+	auto cb_it{callbackmap.find(this_ref)};
+	if(cb_it == callbackmap.cend()) {
+		return;
+	}
+
+	callback_holder_t *holder = cb_it->second;
+	if(!holder) {
+		return;
 	}
 	
-	void PluginThink()
-	{
-		int this_ref = gamehelpers->EntityToBCompatRef(this);
-
-		auto it{callbackmap.find(this_ref)};
-		if(it == callbackmap.cend()) {
-			return;
-		}
-
-		callback_holder_t *holder = it->second;
-		if(!holder) {
-			return;
-		}
-		
-		IPluginFunction *func = holder->think.callback;
-		if(!func) {
-			return;
-		}
-
-		func->PushCell(this_ref);
-		func->PushCell(holder->think.data);
-		cell_t res = 0;
-		func->Execute(&res);
+	if(m_iCurrentThinkContext < 0 || m_iCurrentThinkContext >= holder->thinkctxs.size()) {
+		return;
 	}
-};
+
+	auto fnc_it = holder->thinkctxs.begin();
+	std::advance(fnc_it, m_iCurrentThinkContext);
+	
+	IChangeableForward *fwd = fnc_it->second.fwd;
+	if(!fwd) {
+		if(fnc_it->second.old_think) {
+			(this->*fnc_it->second.old_think)();
+		}
+		return;
+	}
+
+	fwd->PushCell(this_ref);
+	fwd->PushString(fnc_it->first.c_str());
+	cell_t res = 0;
+	fwd->Execute(&res);
+
+	if(res >= Pl_Handled) {
+		return;
+	}
+
+	if(fnc_it->second.old_think) {
+		(this->*fnc_it->second.old_think)();
+	}
+}
+
+void CBaseEntity::PluginThink()
+{
+	int this_ref = gamehelpers->EntityToBCompatRef(this);
+
+	auto it{callbackmap.find(this_ref)};
+	if(it == callbackmap.cend()) {
+		return;
+	}
+
+	callback_holder_t *holder = it->second;
+	if(!holder) {
+		return;
+	}
+	
+	IChangeableForward *fwd = holder->think.fwd;
+	if(!fwd) {
+		if(holder->think.old_think) {
+			(this->*holder->think.old_think)();
+		}
+		return;
+	}
+
+	fwd->PushCell(this_ref);
+	cell_t res = 0;
+	fwd->Execute(&res);
+
+	if(res >= Pl_Handled) {
+		return;
+	}
+
+	if(holder->think.old_think) {
+		(this->*holder->think.old_think)();
+	}
+}
+
+void callback_holder_t::HookEntityDtor()
+{
+	CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
+	int this_ref = gamehelpers->EntityToBCompatRef(pEntity);
+	dtor(pEntity);
+	callbackmap.erase(this_ref);
+	erase = false;
+	delete this;
+	RETURN_META(MRES_HANDLED);
+}
+
+callback_holder_t::callback_holder_t(CBaseEntity *pEntity, int ref_)
+	: ref{ref_}
+{
+	SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &callback_holder_t::HookEntityDtor), false);
+
+	think.old_think = pEntity->GetThinkFunc();
+
+	callbackmap.emplace(ref, this);
+}
+
+callback_holder_t::~callback_holder_t()
+{
+	if(think.fwd) {
+		forwards->ReleaseForward(think.fwd);
+	}
+
+	for(auto &it_ctx : thinkctxs) {
+		if(it_ctx.second.fwd) {
+			forwards->ReleaseForward(it_ctx.second.fwd);
+		}
+	}
+
+	if(erase) {
+		callbackmap.erase(ref);
+	}
+}
 
 void callback_holder_t::dtor(CBaseEntity *pEntity)
 {
-	if(think.callback != nullptr) {
-		pEntity->SetThink(nullptr);
-		think.callback = nullptr;
-	}
-	
-	for(auto &it : thinkctxs) {
-		pEntity->SetContextThink(nullptr, 0.0f, it.first.c_str());
-	}
 	thinkctxs.clear();
 
 	SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &callback_holder_t::HookEntityDtor), false);
@@ -2579,26 +2617,44 @@ static cell_t SetEntityContextThink(IPluginContext *pContext, const cell_t *para
 	callback_holder_t *holder = nullptr;
 
 	int ref = gamehelpers->EntityToBCompatRef(pEntity);
+
+	char *context_ptr = nullptr;
+	pContext->LocalToString(params[4], &context_ptr);
+	std::string context{context_ptr};
+
+	callback_holder_t::callback_t *callback{nullptr};
 	
 	callback_holder_map_t::iterator it{callbackmap.find(ref)};
 	if(it != callbackmap.end()) {
 		holder = it->second;
 
-		if(holder->owner != pContext->GetIdentity()) {
-			return pContext->ThrowNativeError("Another plugin already set this entity think");
+		auto it_cb{holder->thinkctxs.find(context)};
+		if(it_cb != holder->thinkctxs.cend()) {
+			callback = &it_cb->second;
 		}
 	} else {
-		holder = new callback_holder_t{pEntity, ref, pContext->GetIdentity()};
+		holder = new callback_holder_t{pEntity, ref};
 	}
+
+	if(!callback) {
+		callback_holder_t::callback_t tmp_cb{};
+		tmp_cb.old_think = pEntity->GetThinkFuncContext(context_ptr);
+		tmp_cb.fwd = forwards->CreateForwardEx(nullptr, ET_Hook, 2, nullptr, Param_Cell, Param_String);
+		callback = &holder->thinkctxs.emplace(std::move(context), std::move(tmp_cb)).first->second;
+
+		pEntity->SetContextThink(&CBaseEntity::PluginThinkContext, 0.0f, context_ptr);
+	}
+
+	IPluginFunction *func = pContext->GetFunctionById(params[2]);
 	
-	char *context = nullptr;
-	pContext->LocalToString(params[4], &context);
-	
-	holder->thinkctxs[context].callback = pContext->GetFunctionById(params[2]);
-	holder->thinkctxs[context].data = params[5];
-	
-	pEntity->SetContextThink(&CBaseEntity::PluginThinkContext, sp_ctof(params[3]), context);
-	
+	callback->fwd->RemoveFunction(func);
+	callback->fwd->AddFunction(func);
+
+	IdentityToken_t *iden{pContext->GetIdentity()};
+	if(std::find(holder->owners.cbegin(), holder->owners.cend(), iden) == holder->owners.cend()) {
+		holder->owners.emplace_back(iden);
+	}
+
 	return 0;
 }
 
@@ -2616,19 +2672,26 @@ static cell_t SetEntityThink(IPluginContext *pContext, const cell_t *params)
 	callback_holder_map_t::iterator it{callbackmap.find(ref)};
 	if(it != callbackmap.end()) {
 		holder = it->second;
-
-		if(holder->owner != pContext->GetIdentity()) {
-			return pContext->ThrowNativeError("Another plugin already set this entity think");
-		}
 	} else {
-		holder = new callback_holder_t{pEntity, ref, pContext->GetIdentity()};
+		holder = new callback_holder_t{pEntity, ref};
 	}
+
+	if(!holder->think.fwd) {
+		holder->think.fwd = forwards->CreateForwardEx(nullptr, ET_Hook, 1, nullptr, Param_Cell);
+
+		pEntity->SetThink(&CBaseEntity::PluginThink, 0.0f);
+	}
+
+	IPluginFunction *func = pContext->GetFunctionById(params[2]);
 	
-	holder->think.callback = pContext->GetFunctionById(params[2]);
-	holder->think.data = params[3];
-	
-	pEntity->SetThink(&CBaseEntity::PluginThink);
-	
+	holder->think.fwd->RemoveFunction(func);
+	holder->think.fwd->AddFunction(func);
+
+	IdentityToken_t *iden{pContext->GetIdentity()};
+	if(std::find(holder->owners.cbegin(), holder->owners.cend(), iden) == holder->owners.cend()) {
+		holder->owners.emplace_back(iden);
+	}
+
 	return 0;
 }
 
@@ -2638,27 +2701,17 @@ static cell_t SetEntityNextThink(IPluginContext *pContext, const cell_t *params)
 	if(!pEntity) {
 		return pContext->ThrowNativeError("Invalid Entity Reference/Index %i", params[1]);
 	}
-	
-	pEntity->SetNextThink(sp_ctof(params[2]), nullptr);
-	return 0;
-}
 
-static cell_t SetEntityNextThinkContext(IPluginContext *pContext, const cell_t *params)
-{
-	CBaseEntity *pEntity = gamehelpers->ReferenceToEntity(params[1]);
-	if(!pEntity) {
-		return pContext->ThrowNativeError("Invalid Entity Reference/Index %i", params[1]);
-	}
-	
 	char *context = nullptr;
-	pContext->LocalToString(params[3], &context);
-	
+	pContext->LocalToStringNULL(params[3], &context);
+	if(context && context[0] == '\0') {
+		context = nullptr;
+	}
+
 	int iIndex = -1;
 	
-	if(context[0] == '\0') {
-		if(CBaseEntity::m_iCurrentThinkContext < 0 || CBaseEntity::m_iCurrentThinkContext >= pEntity->GetAThinkFuncstions().Count()) {
-			return pContext->ThrowNativeError("Theres no current context");
-		} else {
+	if(!context) {
+		if(CBaseEntity::m_iCurrentThinkContext > 0 && CBaseEntity::m_iCurrentThinkContext < pEntity->GetAThinkFuncstions().Count()) {
 			iIndex = CBaseEntity::m_iCurrentThinkContext;
 		}
 	} else {
@@ -2667,8 +2720,13 @@ static cell_t SetEntityNextThinkContext(IPluginContext *pContext, const cell_t *
 			return pContext->ThrowNativeError("Invalid context %s", context);
 		}
 	}
-	
-	pEntity->SetNextThinkContext(sp_ctof(params[2]), iIndex);
+
+	if(iIndex != -1) {
+		pEntity->SetNextThinkContext(sp_ctof(params[2]), iIndex);
+	} else {
+		pEntity->SetNextThink(sp_ctof(params[2]), context);
+	}
+
 	return 0;
 }
 
@@ -2704,10 +2762,9 @@ sp_nativeinfo_t natives[] =
 	{"CustomDatamap.from_factory", CustomDatamapfrom_factory},
 	{"CustomDatamap.add_prop", CustomDatamapadd_prop},
 	{"CustomDatamap.set_name", CustomDatamapset_name},
-	{"SetEntityContextThink", SetEntityContextThink},
-	{"SetEntityThink", SetEntityThink},
+	{"HookEntityContextThink", SetEntityContextThink},
+	{"HookEntityThink", SetEntityThink},
 	{"SetEntityNextThink", SetEntityNextThink},
-	{"SetEntityNextThinkContext", SetEntityNextThinkContext},
 	{"AllocPooledString", native_AllocPooledString},
 	{NULL, NULL}
 };
@@ -2717,16 +2774,36 @@ void Sample::OnPluginUnloaded(IPlugin *plugin)
 	callback_holder_map_t::iterator it{callbackmap.begin()};
 	while(it != callbackmap.end()) {
 		callback_holder_t *holder = it->second;
+		std::vector<IdentityToken_t *> &owners{holder->owners};
 
-		if(holder->owner == plugin->GetIdentity()) {
-			CBaseEntity *pEntity = gamehelpers->ReferenceToEntity(holder->ref);
-			if(pEntity) {
-				holder->dtor(pEntity);
+		auto it_own{std::find(owners.begin(), owners.end(), plugin->GetIdentity())};
+		if(it_own != owners.cend()) {
+			owners.erase(it_own);
+
+			size_t func_count{0};
+
+			if(holder->think.fwd) {
+				holder->think.fwd->RemoveFunctionsOfPlugin(plugin);
+				func_count += holder->think.fwd->GetFunctionCount();
 			}
-			holder->erase = false;
-			delete holder;
-			it = callbackmap.erase(it);
-			continue;
+
+			for(auto &it_ctx : holder->thinkctxs) {
+				if(it_ctx.second.fwd) {
+					it_ctx.second.fwd->RemoveFunctionsOfPlugin(plugin);
+					func_count += it_ctx.second.fwd->GetFunctionCount();
+				}
+			}
+
+			if(func_count == 0) {
+				CBaseEntity *pEntity = gamehelpers->ReferenceToEntity(holder->ref);
+				if(pEntity) {
+					holder->dtor(pEntity);
+				}
+				holder->erase = false;
+				delete holder;
+				it = callbackmap.erase(it);
+				continue;
+			}
 		}
 		
 		++it;

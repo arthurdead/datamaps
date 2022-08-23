@@ -3,9 +3,11 @@
 #endif
 #define datamaps_included
 
+#define TIME_NEVER_THINK -1.0
+
 typedef entityalloc_func_t = function Address (int size_modifier, any data);
-typedef ctxthink_func_t = function void (int entity, const char[] context, any data);
-typedef think_func_t = function void (int entity, any data);
+typedef ctxthink_func_t = function Action (int entity, const char[] context);
+typedef think_func_t = function Action (int entity);
 
 methodmap IEntityFactory
 {
@@ -100,10 +102,10 @@ methodmap CustomDatamap < Handle
 	public native void add_prop(const char[] name, custom_prop_type type, int num = 1);
 };
 
-native void SetEntityContextThink(int entity, ctxthink_func_t func, float time, const char[] context, any data = 0);
-native void SetEntityThink(int entity, think_func_t func, any data = 0);
-native void SetEntityNextThink(int entity, float time);
-native void SetEntityNextThinkContext(int entity, float time, const char[] context = "");
+native void HookEntityContextThink(int entity, ctxthink_func_t func, const char[] context);
+native void HookEntityThink(int entity, think_func_t func);
+
+native void SetEntityNextThink(int entity, float time, const char[] context = NULL_STRING);
 
 native Address AllocPooledString(const char[] str);
 
