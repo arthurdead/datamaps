@@ -540,7 +540,7 @@ void CBaseEntity::PluginThinkContext()
 	std::advance(fnc_it, m_iCurrentThinkContext);
 	
 	IChangeableForward *fwd = fnc_it->second.fwd;
-	if(!fwd) {
+	if(!fwd || fwd->GetFunctionCount() == 0) {
 		if(fnc_it->second.old_think) {
 			(this->*fnc_it->second.old_think)();
 		}
@@ -576,7 +576,7 @@ void CBaseEntity::PluginThink()
 	}
 	
 	IChangeableForward *fwd = holder->think.fwd;
-	if(!fwd) {
+	if(!fwd || fwd->GetFunctionCount() == 0) {
 		if(holder->think.old_think) {
 			(this->*holder->think.old_think)();
 		}
