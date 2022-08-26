@@ -548,7 +548,7 @@ void CBaseEntity::PluginThinkContext()
 	}
 
 	fwd->PushCell(gamehelpers->EntityToBCompatRef(this));
-	fwd->PushString(fnc_it->first.c_str());
+	fwd->PushStringEx((char *)fnc_it->first.c_str(), fnc_it->first.size(), SM_PARAM_STRING_COPY|SM_PARAM_STRING_UTF8, 0);
 	cell_t res = 0;
 	fwd->Execute(&res);
 
