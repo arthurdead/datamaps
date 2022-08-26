@@ -520,7 +520,7 @@ callback_holder_map_t callbackmap{};
 
 void CBaseEntity::PluginThinkContext()
 {
-	int this_ref = gamehelpers->EntityToBCompatRef(this);
+	int this_ref = gamehelpers->EntityToReference(this);
 
 	auto cb_it{callbackmap.find(this_ref)};
 	if(cb_it == callbackmap.cend()) {
@@ -547,7 +547,7 @@ void CBaseEntity::PluginThinkContext()
 		return;
 	}
 
-	fwd->PushCell(this_ref);
+	fwd->PushCell(gamehelpers->EntityToBCompatRef(this));
 	fwd->PushString(fnc_it->first.c_str());
 	cell_t res = 0;
 	fwd->Execute(&res);
@@ -563,7 +563,7 @@ void CBaseEntity::PluginThinkContext()
 
 void CBaseEntity::PluginThink()
 {
-	int this_ref = gamehelpers->EntityToBCompatRef(this);
+	int this_ref = gamehelpers->EntityToReference(this);
 
 	auto it{callbackmap.find(this_ref)};
 	if(it == callbackmap.cend()) {
@@ -583,7 +583,7 @@ void CBaseEntity::PluginThink()
 		return;
 	}
 
-	fwd->PushCell(this_ref);
+	fwd->PushCell(gamehelpers->EntityToBCompatRef(this));
 	cell_t res = 0;
 	fwd->Execute(&res);
 
@@ -599,7 +599,7 @@ void CBaseEntity::PluginThink()
 void callback_holder_t::HookEntityDtor()
 {
 	CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
-	int this_ref = gamehelpers->EntityToBCompatRef(pEntity);
+	int this_ref = gamehelpers->EntityToReference(pEntity);
 	dtor(pEntity);
 	callbackmap.erase(this_ref);
 	erase = false;
@@ -2616,7 +2616,7 @@ static cell_t SetEntityContextThink(IPluginContext *pContext, const cell_t *para
 	
 	callback_holder_t *holder = nullptr;
 
-	int ref = gamehelpers->EntityToBCompatRef(pEntity);
+	int ref = gamehelpers->EntityToReference(pEntity);
 
 	char *context_ptr = nullptr;
 	pContext->LocalToString(params[4], &context_ptr);
@@ -2667,7 +2667,7 @@ static cell_t SetEntityThink(IPluginContext *pContext, const cell_t *params)
 	
 	callback_holder_t *holder = nullptr;
 	
-	int ref = gamehelpers->EntityToBCompatRef(pEntity);
+	int ref = gamehelpers->EntityToReference(pEntity);
 
 	callback_holder_map_t::iterator it{callbackmap.find(ref)};
 	if(it != callbackmap.end()) {
