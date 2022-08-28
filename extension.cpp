@@ -1848,10 +1848,6 @@ public:
 	void decrement_svclasses()
 	{
 		--serverclasses;
-		if(serverclasses == 0) {
-			serverclassbits = 0;
-			return;
-		}
 		serverclassbits = Q_log2( serverclasses ) + 1;
 	}
 };
@@ -2932,6 +2928,10 @@ void Sample::OnPluginUnloaded(IPlugin *plugin)
 
 void Sample::OnEntityDestroyed(CBaseEntity *pEntity)
 {
+	if(!pEntity) {
+		return;
+	}
+
 	int ref = gamehelpers->EntityToReference(pEntity);
 
 	auto it{hookobjs.find(ref)};
