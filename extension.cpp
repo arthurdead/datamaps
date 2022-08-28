@@ -749,7 +749,7 @@ public:
 	{
 		unsigned short nIndex = m_Factories.Find( pClassName );
 		if ( nIndex == m_Factories.InvalidIndex() ) {
-			auto it{factory_aliases.find(std::string{})};
+			auto it{factory_aliases.find(std::string{pClassName})};
 			if(it != factory_aliases.cend()) {
 				RETURN_META_VALUE(MRES_SUPERCEDE, it->second);
 			}
@@ -890,7 +890,72 @@ enum custom_prop_type
 	custom_prop_variant,
 };
 
-struct custom_prop_info_t
+class hookobj_t;
+
+std::unordered_map<int, std::vector<hookobj_t *>> hookobjs{};
+
+class hookobj_t
+{
+public:
+	std::vector<int> entities{};
+	bool erase_obj{true};
+	bool erase_ent{true};
+
+	virtual ~hookobj_t()
+	{
+		erase_ent = false;
+
+		for(int ref : entities) {
+			CBaseEntity *pEntity{gamehelpers->ReferenceToEntity(ref)};
+			if(!pEntity) {
+				continue;
+			}
+
+			remove_hooks(pEntity);
+		}
+	}
+
+	void add_hooks(CBaseEntity *pEntity)
+	{
+		int ref = gamehelpers->EntityToReference(pEntity);
+
+		auto it_objs{hookobjs.find(ref)};
+		if(it_objs == hookobjs.cend()) {
+			it_objs = hookobjs.emplace(ref, std::vector<hookobj_t *>{}).first;
+		}
+		it_objs->second.emplace_back(this);
+
+		entities.emplace_back(ref);
+	}
+
+	virtual void remove_hooks(CBaseEntity *pEntity)
+	{
+		int ref = gamehelpers->EntityToReference(pEntity);
+
+		if(erase_obj) {
+			auto it_objs{hookobjs.find(ref)};
+			if(it_objs != hookobjs.cend()) {
+				std::vector<hookobj_t *> &vec{it_objs->second};
+				auto it_obj{std::find(vec.begin(), vec.end(), this)};
+				if(it_obj != vec.end()) {
+					vec.erase(it_obj);
+				}
+				if(vec.empty()) {
+					hookobjs.erase(it_objs);
+				}
+			}
+		}
+
+		if(erase_ent) {
+			auto it_ent{std::find(entities.begin(), entities.end(), ref)};
+			if(it_ent != entities.end()) {
+				entities.erase(it_ent);
+			}
+		}
+	}
+};
+
+struct custom_prop_info_t : public hookobj_t
 {
 	bool was_overriden = false;
 	IEntityFactory *fac = nullptr;
@@ -908,7 +973,7 @@ struct custom_prop_info_t
 	std::string mapname{};
 	
 	custom_prop_info_t(IEntityFactory *fac_, std::string &&clsname_);
-	~custom_prop_info_t();
+	~custom_prop_info_t() override;
 	
 	void dtor(CBaseEntity *pEntity)
 	{
@@ -1164,14 +1229,18 @@ struct custom_prop_info_t
 		RETURN_META(MRES_HANDLED);
 	}
 
-	void remove_hooks(CBaseEntity *pEntity)
+	void remove_hooks(CBaseEntity *pEntity) override
 	{
+		hookobj_t::remove_hooks(pEntity);
+
 		SH_REMOVE_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
 		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
 	}
 
 	void add_hooks(CBaseEntity *pEntity)
 	{
+		hookobj_t::add_hooks(pEntity);
+
 		SH_ADD_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
 		SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
 	}
@@ -1413,10 +1482,10 @@ static const CStandardSendProxies *std_proxies{nullptr};
 
 #define SPROP_HACK_ABSOFFSET (1 << SPROP_NUMFLAGBITS)
 
-struct serverclass_override_t
+struct serverclass_override_t : public hookobj_t
 {
 	serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_);
-	~serverclass_override_t();
+	~serverclass_override_t() override;
 	
 	IServerNetworkable *HookCreate(const char *classname);
 	
@@ -1432,8 +1501,10 @@ struct serverclass_override_t
 		RETURN_META(MRES_HANDLED);
 	}
 
-	void remove_hooks(CBaseEntity *pEntity)
+	void remove_hooks(CBaseEntity *pEntity) override
 	{
+		hookobj_t::remove_hooks(pEntity);
+
 		IServerNetworkable *pNet = pEntity->GetNetworkable();
 		SH_REMOVE_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
 		SH_REMOVE_HOOK(IServerNetworkable, GetServerClass, pNet, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
@@ -1442,6 +1513,8 @@ struct serverclass_override_t
 
 	void add_hooks(CBaseEntity *pEntity, IServerNetworkable *pNet)
 	{
+		hookobj_t::add_hooks(pEntity);
+
 		SH_ADD_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
 		SH_ADD_HOOK(IServerNetworkable, GetServerClass, pNet, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
 		SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
@@ -1977,10 +2050,6 @@ serverclass_override_t::~serverclass_override_t()
 		SH_REMOVE_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &serverclass_override_t::HookCreate), false);
 	}
 	
-	loop_all_entities([this](CBaseEntity *pEntity){
-		remove_hooks(pEntity);
-	}, clsname);
-	
 	if(freehndl) {
 		if(hndl != BAD_HANDLE) {
 			HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
@@ -2044,10 +2113,6 @@ custom_prop_info_t::~custom_prop_info_t()
 	if(!fac_is_sp) {
 		SH_REMOVE_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &custom_prop_info_t::HookCreate), false);
 	}
-	
-	loop_all_entities([this](CBaseEntity *pEntity){
-		remove_hooks(pEntity);
-	}, clsname);
 	
 	for(custom_typedescription_t &desc : dataDesc) {
 		desc.clear_name();
@@ -2619,7 +2684,7 @@ cell_t CustomEntityFactoryInterfaceget(IPluginContext *pContext, const cell_t *p
 	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
 	
 	sp_entity_factory *factory = nullptr;
-	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
+	HandleError err = handlesys->ReadHandle(params[1], factory_handle, &security, (void **)&factory);
 	if(err != HandleError_None)
 	{
 		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
@@ -2633,7 +2698,7 @@ cell_t CustomEntityFactoryadd_alias(IPluginContext *pContext, const cell_t *para
 	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
 	
 	sp_entity_factory *factory = nullptr;
-	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
+	HandleError err = handlesys->ReadHandle(params[1], factory_handle, &security, (void **)&factory);
 	if(err != HandleError_None)
 	{
 		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
@@ -2867,7 +2932,18 @@ void Sample::OnPluginUnloaded(IPlugin *plugin)
 
 void Sample::OnEntityDestroyed(CBaseEntity *pEntity)
 {
-	
+	int ref = gamehelpers->EntityToReference(pEntity);
+
+	auto it{hookobjs.find(ref)};
+	if(it != hookobjs.cend()) {
+		std::vector<hookobj_t *> &vec{it->second};
+		for(hookobj_t *obj : vec) {
+			obj->erase_ent = false;
+			obj->erase_obj = false;
+			obj->remove_hooks(pEntity);
+		}
+		hookobjs.erase(it);
+	}
 }
 
 void Sample::OnHandleDestroy(HandleType_t type, void *object)
