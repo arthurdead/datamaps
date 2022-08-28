@@ -60,6 +60,11 @@
 				"library" "engine"
 				"linux" "@_Z16SendTable_GetCRCv"
 			}
+			"g_SendTableCRC"
+			{
+				"library" "engine"
+				"linux" "@g_SendTableCRC"
+			}
 			"CGameClient::SendSignonData"
 			{
 				"library" "engine"
@@ -69,6 +74,21 @@
 			{
 				"library" "engine"
 				"linux" "@_ZN13SVC_ClassInfo13WriteToBufferER8bf_write"
+			}
+			"SV_CreateBaseline"
+			{
+				"library" "engine"
+				"linux" "@_Z17SV_CreateBaselinev"
+			}
+			"SV_WriteSendTables"
+			{
+				"library" "engine"
+				"linux" "@_Z18SV_WriteSendTablesP11ServerClassR8bf_write"
+			}
+			"SV_WriteClassInfos"
+			{
+				"library" "engine"
+				"linux" "@_Z18SV_WriteClassInfosP11ServerClassR8bf_write"
 			}
 		}
 	}

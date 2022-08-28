@@ -334,6 +334,17 @@ public:
 
 		return nullptr;
 	}
+
+	int	GetIndexForThinkContext( const char *pszContext )
+	{
+		for ( int i = 0; i < GetAThinkFuncstions().Size(); i++ )
+		{
+			if ( !Q_strncmp( STRING( GetAThinkFuncstions()[i].m_iszContext ), pszContext, MAX_CONTEXT_LENGTH ) )
+				return i;
+		}
+
+		return NO_THINK_CONTEXT;
+	}
 	
 	int &GetIEFlags()
 	{
@@ -391,17 +402,6 @@ public:
 		}
 		
 		SimThink_EntityChanged( this );
-	}
-	
-	int	GetIndexForThinkContext( const char *pszContext )
-	{
-		for ( int i = 0; i < GetAThinkFuncstions().Size(); i++ )
-		{
-			if ( !Q_strncmp( STRING( GetAThinkFuncstions()[i].m_iszContext ), pszContext, MAX_CONTEXT_LENGTH ) )
-				return i;
-		}
-
-		return NO_THINK_CONTEXT;
 	}
 	
 	int RegisterThinkContext( const char *szContext )
@@ -548,7 +548,7 @@ void CBaseEntity::PluginThinkContext()
 	}
 
 	fwd->PushCell(gamehelpers->EntityToBCompatRef(this));
-	fwd->PushStringEx((char *)fnc_it->first.c_str(), fnc_it->first.size(), SM_PARAM_STRING_COPY|SM_PARAM_STRING_UTF8, 0);
+	fwd->PushStringEx((char *)fnc_it->first.c_str(), fnc_it->first.size()+1, SM_PARAM_STRING_COPY|SM_PARAM_STRING_UTF8, 0);
 	cell_t res = 0;
 	fwd->Execute(&res);
 
@@ -693,6 +693,10 @@ void loop_all_entities(T func, const std::string &name)
 	}
 }
 
+SH_DECL_HOOK1(IEntityFactoryDictionary, FindFactory, SH_NOATTRIB, 0, IEntityFactory *, const char *);
+
+std::unordered_map<std::string, IEntityFactory *> factory_aliases;
+
 class CEntityFactoryDictionary : public IEntityFactoryDictionary
 {
 public:
@@ -734,6 +738,25 @@ public:
 	static bool is_factory_custom(IEntityFactory *fac)
 	{
 		return (fac->GetEntitySize() == (size_t)-1);
+	}
+
+	void init_hooks()
+	{
+		SH_ADD_HOOK(IEntityFactoryDictionary, FindFactory, this, SH_MEMBER(this, &CEntityFactoryDictionary::HookFindFactory), false);
+	}
+
+	IEntityFactory *HookFindFactory( const char *pClassName )
+	{
+		unsigned short nIndex = m_Factories.Find( pClassName );
+		if ( nIndex == m_Factories.InvalidIndex() ) {
+			auto it{factory_aliases.find(std::string{})};
+			if(it != factory_aliases.cend()) {
+				RETURN_META_VALUE(MRES_SUPERCEDE, it->second);
+			}
+
+			RETURN_META_VALUE(MRES_SUPERCEDE, NULL);
+		}
+		RETURN_META_VALUE(MRES_SUPERCEDE, m_Factories[nIndex]);
 	}
 };
 
@@ -1607,6 +1630,8 @@ public:
 	IPluginFunction *func = nullptr;
 	size_t size = 0;
 	cell_t data = 0;
+
+	std::vector<std::string> aliases{};
 	
 	custom_prop_info_t *custom_prop = nullptr;
 	serverclass_override_t *custom_server = nullptr;
@@ -1649,6 +1674,10 @@ sp_entity_factory::sp_entity_factory(std::string &&name_)
 sp_entity_factory::~sp_entity_factory()
 {
 	dont_delete = true;
+
+	for(const auto &it : aliases) {
+		factory_aliases.erase(it);
+	}
 	
 	dictionary->remove_factory(this, name.c_str());
 	
@@ -1746,6 +1775,10 @@ public:
 	void decrement_svclasses()
 	{
 		--serverclasses;
+		if(serverclasses == 0) {
+			serverclassbits = 0;
+			return;
+		}
 		serverclassbits = Q_log2( serverclasses ) + 1;
 	}
 };
@@ -1879,9 +1912,7 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 
 	g_pServerClassTail->m_pNext = custom_server_head;
 
-	if(server) {
-		((CBaseServer *)server)->increment_svclasses();
-	}
+	((CBaseServer *)server)->increment_svclasses();
 	
 	if(realcls) {
 		init();
@@ -1938,9 +1969,7 @@ serverclass_override_t::~serverclass_override_t()
 		table1->m_pProps = m_pProps;
 	}
 	
-	if(server) {
-		((CBaseServer *)server)->decrement_svclasses();
-	}
+	((CBaseServer *)server)->decrement_svclasses();
 	
 	remove_serverclass_from_sm_cache((ServerClass *)&cls);
 	
@@ -2599,6 +2628,31 @@ cell_t CustomEntityFactoryInterfaceget(IPluginContext *pContext, const cell_t *p
 	return (cell_t)(IEntityFactory *)factory;
 }
 
+cell_t CustomEntityFactoryadd_alias(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	sp_entity_factory *factory = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+
+	char *classname_ptr{nullptr};
+	pContext->LocalToString(params[2], &classname_ptr);
+	std::string classname{classname_ptr};
+
+	auto it{factory_aliases.find(classname)};
+	if(it != factory_aliases.cend()) {
+		return pContext->ThrowNativeError("%s is already registered", classname_ptr);
+	}
+
+	factory->aliases.emplace_back(classname);
+	factory_aliases.emplace(std::move(classname), (IEntityFactory *)factory);
+	return 0;
+}
+
 cell_t EntityFactoryDictionaryfind(IPluginContext *pContext, const cell_t *params)
 {
 	char *classname = nullptr;
@@ -2619,7 +2673,7 @@ static cell_t SetEntityContextThink(IPluginContext *pContext, const cell_t *para
 	int ref = gamehelpers->EntityToReference(pEntity);
 
 	char *context_ptr = nullptr;
-	pContext->LocalToString(params[4], &context_ptr);
+	pContext->LocalToString(params[3], &context_ptr);
 	std::string context{context_ptr};
 
 	callback_holder_t::callback_t *callback{nullptr};
@@ -2708,7 +2762,7 @@ static cell_t SetEntityNextThink(IPluginContext *pContext, const cell_t *params)
 		context = nullptr;
 	}
 
-	int iIndex = -1;
+	int iIndex = NO_THINK_CONTEXT;
 	
 	if(!context) {
 		if(CBaseEntity::m_iCurrentThinkContext > 0 && CBaseEntity::m_iCurrentThinkContext < pEntity->GetAThinkFuncstions().Count()) {
@@ -2721,7 +2775,7 @@ static cell_t SetEntityNextThink(IPluginContext *pContext, const cell_t *params)
 		}
 	}
 
-	if(iIndex != -1) {
+	if(iIndex != NO_THINK_CONTEXT) {
 		pEntity->SetNextThinkContext(sp_ctof(params[2]), iIndex);
 	} else {
 		pEntity->SetNextThink(sp_ctof(params[2]), context);
@@ -2745,6 +2799,7 @@ sp_nativeinfo_t natives[] =
 	{"IEntityFactory.Custom.get", IEntityFactoryCustomget},
 	{"IEntityFactory.Size.get", IEntityFactorySizeget},
 	{"CustomEntityFactory.Interface.get", CustomEntityFactoryInterfaceget},
+	{"CustomEntityFactory.add_alias", CustomEntityFactoryadd_alias},
 	{"EntityFactoryDictionary.find", EntityFactoryDictionaryfind},
 	{"EntityFactoryDictionary.register_based", EntityFactoryDictionaryregister_based},
 	{"EntityFactoryDictionary.register_function", EntityFactoryDictionaryregister_function},
@@ -2870,15 +2925,6 @@ DETOUR_DECL_STATIC3(SV_ComputeClientPacks, void, int, clientCount, CGameClient *
 	DETOUR_STATIC_CALL(SV_ComputeClientPacks)(clientCount, clients, snapshot);
 }
 
-DETOUR_DECL_MEMBER0(DetourCGameServerAssignClassIds, void)
-{
-	DETOUR_MEMBER_CALL(DetourCGameServerAssignClassIds)();
-
-	for(auto &it : server_map) {
-		it.second->cls.m_ClassID = it.second->classid;
-	}
-}
-
 static ConVar *sv_sendtables{nullptr};
 
 bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool late)
@@ -2888,6 +2934,7 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	GET_V_IFACE_ANY(GetEngineFactory, engine, IVEngineServer, INTERFACEVERSION_VENGINESERVER)
 #if SOURCE_ENGINE == SE_TF2
 	dictionary = (CEntityFactoryDictionary *)servertools->GetEntityFactoryDictionary();
+	dictionary->init_hooks();
 #endif
 #ifndef SOURCEHOOK_BEING_STUPID
 	SH_ADD_HOOK(IVEngineServer, PvAllocEntPrivateData, engine, SH_STATIC(&HookPvAllocEntPrivateData), false);
@@ -2940,25 +2987,134 @@ CDetour *pPhysicsRunSpecificThink = nullptr;
 CDetour *pCGameServerAssignClassIds = nullptr;
 
 CDetour *SendTable_GetCRC_detour = nullptr;
+CDetour *SV_CreateBaseline_detour{nullptr};
 CDetour *pCGameClientSendSignonData = nullptr;
 CDetour *pSVC_ClassInfoWriteToBuffer = nullptr;
 
 static bool in_send_signondata{false};
 
+#include <tier1/checksum_crc.h>
+
+CRC32_t *g_SendTableCRC{nullptr};
+
+void Sample::OnCoreMapStart(edict_t *pEdictList, int edictCount, int clientMax)
+{
+}
+
+static void Host_Error(const char *error, ...) noexcept
+{
+	va_list argptr;
+	char string[1024];
+
+	va_start(argptr, error);
+	Q_vsnprintf(string, sizeof(string), error, argptr);
+	va_end(argptr);
+
+	Error("Host_Error: %s", string);
+}
+
+void *SV_WriteSendTablesPtr{nullptr};
+void *SV_WriteClassInfosPtr{nullptr};
+
+void SV_WriteSendTables( ServerClass *pClasses, bf_write &pBuf )
+{
+	(void_to_func<void(*)(ServerClass *, bf_write &)>(SV_WriteSendTablesPtr))(pClasses, pBuf);
+}
+
+void SV_WriteClassInfos(ServerClass *pClasses, bf_write &pBuf)
+{
+	(void_to_func<void(*)(ServerClass *, bf_write &)>(SV_WriteClassInfosPtr))(pClasses, pBuf);
+}
+
+bf_write			m_FullSendTables;
+CUtlMemory<byte>	m_FullSendTablesBuffer;
+
+#define	NET_MAX_PAYLOAD				288000	
+
+ConVar sv_sendcustomtables{"sv_sendcustomtables", "0"};
+ConVar sv_sendclasses{"sv_sendclasses", "0"};
+
+DETOUR_DECL_STATIC0(SV_CreateBaseline, void)
+{
+	DETOUR_STATIC_CALL(SV_CreateBaseline)();
+
+	if(sv_sendtables->GetInt() == 0) {
+		m_FullSendTablesBuffer.EnsureCapacity( NET_MAX_PAYLOAD );
+		m_FullSendTables.StartWriting( m_FullSendTablesBuffer.Base(), m_FullSendTablesBuffer.Count() );
+
+		if(sv_sendcustomtables.GetBool() && custom_server_head) {
+			SV_WriteSendTables( custom_server_head, m_FullSendTables );
+
+			if ( m_FullSendTables.IsOverflowed() )
+			{
+				Host_Error("SV_CreateBaseline: WriteSendTables overflow.\n" );
+				return;
+			}
+		}
+
+		if(sv_sendclasses.GetBool()) {
+			// Send class descriptions.
+			SV_WriteClassInfos(g_pServerClassHead, m_FullSendTables);
+
+			if ( m_FullSendTables.IsOverflowed() )
+			{
+				Host_Error("SV_CreateBaseline: WriteClassInfos overflow.\n" );
+				return;
+			}
+		}
+	}
+}
+
+ConVar sv_nocustomclassids{"sv_nocustomclassids", "1"};
+
+DETOUR_DECL_MEMBER0(DetourCGameServerAssignClassIds, void)
+{
+	DETOUR_MEMBER_CALL(DetourCGameServerAssignClassIds)();
+
+	if(sv_nocustomclassids.GetBool()) {
+		for(auto &it : server_map) {
+			it.second->cls.m_ClassID = it.second->classid;
+		}
+	}
+}
+
+#include <igameevents.h>
+#include <iclient.h>
+#include <inetchannel.h>
+
+class CGameClient : public IGameEventListener2, public IClient, public IClientMessageHandler
+{
+public:
+	
+};
+
 DETOUR_DECL_MEMBER0(DetourCGameClientSendSignonData, bool)
 {
+	CGameClient *pThis = (CGameClient *)this;
+
+	if(sv_sendtables->GetInt() == 0) {
+		if ( m_FullSendTables.IsOverflowed() )
+		{
+			Host_Error( "Send Table signon buffer overflowed %i bytes!!!\n", m_FullSendTables.GetNumBytesWritten() );
+			return false;
+		}
+
+		pThis->GetNetChannel()->SendData( m_FullSendTables );
+	}
+
 	in_send_signondata = true;
 	bool ret = DETOUR_MEMBER_CALL(DetourCGameClientSendSignonData)();
 	in_send_signondata = false;
+
 	return ret;
 }
-
-typedef unsigned int CRC32_t;
 
 DETOUR_DECL_STATIC0(SendTable_GetCRC, CRC32_t)
 {
 	if(in_send_signondata && sv_sendtables->GetInt() == 2) {
-		return (CRC32_t)1;
+		CRC32_t tmp;
+		CRC32_Init(&tmp);
+		return tmp;
 	} else {
 		return DETOUR_STATIC_CALL(SendTable_GetCRC)();
 	}
@@ -2990,14 +3146,29 @@ public:
 	int						m_nNumServerClasses;
 };
 
+ConVar sv_createclasses{"sv_createclasses", "0"};
+
 DETOUR_DECL_MEMBER1(DetourSVC_ClassInfoWriteToBuffer, bool, bf_write &, buffer)
 {
 	SVC_ClassInfo *msg = reinterpret_cast<SVC_ClassInfo *>(this);
 
-	//msg->m_bCreateOnClient = true;
+	msg->m_bCreateOnClient = sv_createclasses.GetBool();
 
 	return DETOUR_MEMBER_CALL(DetourSVC_ClassInfoWriteToBuffer)(buffer);
 }
+
+class SVC_SendTable : public CNetMessage
+{
+public:
+	IServerMessageHandler *m_pMessageHandler;
+
+	bool			m_bNeedsDecoder;
+	int				m_nLength;
+	bf_read			m_DataIn;
+	bf_write		m_DataOut;
+};
+
+#define Bits2Bytes(b) ((b+7)>>3)
 
 bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 {
@@ -3015,11 +3186,19 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	
 	SV_ComputeClientPacks_detour = DETOUR_CREATE_STATIC(SV_ComputeClientPacks, "SV_ComputeClientPacks");
 
-	SendTable_GetCRC_detour = DETOUR_CREATE_STATIC(SendTable_GetCRC, "SendTable_GetCRC");
-	SendTable_GetCRC_detour->EnableDetour();
+	g_pGameConf->GetMemSig("g_SendTableCRC", (void **)&g_SendTableCRC);
+
+	g_pGameConf->GetMemSig("SV_WriteSendTables", (void **)&SV_WriteSendTablesPtr);
+	g_pGameConf->GetMemSig("SV_WriteClassInfos", (void **)&SV_WriteClassInfosPtr);
 
 	pCGameServerAssignClassIds = DETOUR_CREATE_MEMBER(DetourCGameServerAssignClassIds, "CGameServer::AssignClassIds")
 	pCGameServerAssignClassIds->EnableDetour();
+
+	SV_CreateBaseline_detour = DETOUR_CREATE_STATIC(SV_CreateBaseline, "SV_CreateBaseline");
+	SV_CreateBaseline_detour->EnableDetour();
+
+	SendTable_GetCRC_detour = DETOUR_CREATE_STATIC(SendTable_GetCRC, "SendTable_GetCRC");
+	SendTable_GetCRC_detour->EnableDetour();
 
 	pCGameClientSendSignonData = DETOUR_CREATE_MEMBER(DetourCGameClientSendSignonData, "CGameClient::SendSignonData")
 	pCGameClientSendSignonData->EnableDetour();
@@ -3041,6 +3220,7 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	
 #if SOURCE_ENGINE == SE_LEFT4DEAD2
 	dictionary = (void_to_func<CEntityFactoryDictionary *(*)()>(EntityFactoryDictionaryPtr))();
+	dictionary->init_hooks();
 #endif
 	
 	factory_handle = handlesys->CreateType("entity_factory", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
@@ -3064,6 +3244,7 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 void Sample::SDK_OnUnload()
 {
 	SendTable_GetCRC_detour->Destroy();
+	SV_CreateBaseline_detour->Destroy();
 	pSVC_ClassInfoWriteToBuffer->Destroy();
 	pCGameClientSendSignonData->Destroy();
 	SV_ComputeClientPacks_detour->Destroy();

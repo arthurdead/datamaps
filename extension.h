@@ -58,6 +58,8 @@ public:
 	bool is_allowed() const noexcept override final;
 #endif
 
+	virtual void OnCoreMapStart(edict_t *pEdictList, int edictCount, int clientMax);
+
 	virtual void OnHandleDestroy(HandleType_t type, void *object);
 	
 	virtual void OnEntityDestroyed(CBaseEntity *pEntity);

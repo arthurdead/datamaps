@@ -30,6 +30,8 @@ methodmap CustomEntityFactory < Handle
 	{
 		public native get();
 	}
+
+	public native void add_alias(const char[] classname);
 };
 
 methodmap EntityFactoryDictionary
@@ -75,6 +77,8 @@ enum custom_prop_type
 
 #define SPROP_UNSIGNED (1 << 0)
 #define SPROP_NOSCALE  (1 << 2)
+#define SPROP_NORMAL (1<<5)
+#define SPROP_VARINT SPROP_NORMAL
 
 methodmap CustomSendtable < Handle
 {
