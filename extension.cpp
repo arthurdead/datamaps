@@ -3075,6 +3075,7 @@ CRC32_t *g_SendTableCRC{nullptr};
 
 void Sample::OnCoreMapStart(edict_t *pEdictList, int edictCount, int clientMax)
 {
+	m_pInstanceBaselineTable = netstringtables->FindTable(INSTANCE_BASELINE_TABLENAME);
 }
 
 static void Host_Error(const char *error, ...) noexcept
