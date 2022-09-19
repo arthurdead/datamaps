@@ -612,7 +612,10 @@ callback_holder_t::callback_holder_t(CBaseEntity *pEntity, int ref_)
 {
 	SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &callback_holder_t::HookEntityDtor), false);
 
-	think.old_think = pEntity->GetThinkFunc();
+	CBaseEntity::m_pfnThink_t old_think{pEntity->GetThinkFunc()};
+	if(old_think != &CBaseEntity::PluginThink) {
+		think.old_think = old_think;
+	}
 
 	callbackmap.emplace(ref, this);
 }
@@ -636,6 +639,12 @@ callback_holder_t::~callback_holder_t()
 
 void callback_holder_t::dtor(CBaseEntity *pEntity)
 {
+	pEntity->SetThink(think.old_think, 0.0f);
+
+	for(const auto &it : thinkctxs) {
+		pEntity->SetContextThink(it.second.old_think, 0.0f, it.first.c_str());
+	}
+
 	thinkctxs.clear();
 
 	SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &callback_holder_t::HookEntityDtor), false);
@@ -2753,7 +2762,10 @@ static cell_t SetEntityContextThink(IPluginContext *pContext, const cell_t *para
 
 	if(!callback) {
 		callback_holder_t::callback_t tmp_cb{};
-		tmp_cb.old_think = pEntity->GetThinkFuncContext(context_ptr);
+		CBaseEntity::m_pfnThink_t old_think{pEntity->GetThinkFuncContext(context_ptr)};
+		if(old_think != &CBaseEntity::PluginThinkContext) {
+			tmp_cb.old_think = old_think;
+		}
 		tmp_cb.fwd = forwards->CreateForwardEx(nullptr, ET_Hook, 2, nullptr, Param_Cell, Param_String);
 		callback = &holder->thinkctxs.emplace(std::move(context), std::move(tmp_cb)).first->second;
 
