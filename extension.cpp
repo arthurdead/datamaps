@@ -902,6 +902,7 @@ enum custom_prop_type
 class hookobj_t;
 
 std::unordered_map<int, std::vector<hookobj_t *>> hookobjs{};
+std::vector<int> svcls_hooks{};
 
 class hookobj_t
 {
@@ -943,7 +944,7 @@ public:
 
 		if(erase_obj) {
 			auto it_objs{hookobjs.find(ref)};
-			if(it_objs != hookobjs.cend()) {
+			if(it_objs != hookobjs.end()) {
 				std::vector<hookobj_t *> &vec{it_objs->second};
 				auto it_obj{std::find(vec.begin(), vec.end(), this)};
 				if(it_obj != vec.end()) {
@@ -1518,6 +1519,11 @@ struct serverclass_override_t : public hookobj_t
 		SH_REMOVE_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
 		SH_REMOVE_HOOK(IServerNetworkable, GetServerClass, pNet, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
 		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
+
+		auto hsvcls_it{std::find(svcls_hooks.begin(), svcls_hooks.end(), gamehelpers->EntityToReference(pEntity))};
+		if(hsvcls_it != svcls_hooks.end()) {
+			svcls_hooks.erase(hsvcls_it);
+		}
 	}
 
 	void add_hooks(CBaseEntity *pEntity, IServerNetworkable *pNet)
@@ -1527,6 +1533,8 @@ struct serverclass_override_t : public hookobj_t
 		SH_ADD_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
 		SH_ADD_HOOK(IServerNetworkable, GetServerClass, pNet, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
 		SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
+
+		svcls_hooks.emplace_back(gamehelpers->EntityToReference(pEntity));
 	}
 	
 	void do_override(int &base, CBaseEntity *pEntity, IServerNetworkable *pNet);
@@ -2946,15 +2954,20 @@ void Sample::OnEntityDestroyed(CBaseEntity *pEntity)
 
 	int ref = gamehelpers->EntityToReference(pEntity);
 
-	auto it{hookobjs.find(ref)};
-	if(it != hookobjs.cend()) {
-		std::vector<hookobj_t *> &vec{it->second};
+	auto hobj_it{hookobjs.find(ref)};
+	if(hobj_it != hookobjs.end()) {
+		std::vector<hookobj_t *> &vec{hobj_it->second};
 		for(hookobj_t *obj : vec) {
 			obj->erase_ent = false;
 			obj->erase_obj = false;
 			obj->remove_hooks(pEntity);
 		}
-		hookobjs.erase(it);
+		hookobjs.erase(hobj_it);
+	}
+
+	auto hsvcls_it{std::find(svcls_hooks.begin(), svcls_hooks.end(), ref)};
+	if(hsvcls_it != svcls_hooks.end()) {
+		svcls_hooks.erase(hsvcls_it);
 	}
 }
 
@@ -2992,7 +3005,7 @@ static ConVar *sv_parallel_packentities{nullptr};
 #ifdef __HAS_PROXYSEND
 bool Sample::is_allowed() const noexcept
 {
-	return server_map.empty();
+	return svcls_hooks.empty();
 }
 #endif
 
@@ -3003,10 +3016,10 @@ class CGameClient;
 DETOUR_DECL_STATIC3(SV_ComputeClientPacks, void, int, clientCount, CGameClient **, clients, CFrameSnapshot *, snapshot)
 {
 #ifndef __HAS_PROXYSEND
-	sv_parallel_packentities->SetValue(server_map.empty());
+	sv_parallel_packentities->SetValue(svcls_hooks.empty());
 #else
 	if(!proxysend) {
-		sv_parallel_packentities->SetValue(server_map.empty());
+		sv_parallel_packentities->SetValue(svcls_hooks.empty());
 	}
 #endif
 
