@@ -908,20 +908,16 @@ class hookobj_t
 {
 public:
 	std::vector<int> entities{};
-	bool erase_obj{true};
-	bool erase_ent{true};
 
 	virtual ~hookobj_t()
 	{
-		erase_ent = false;
-
 		for(int ref : entities) {
 			CBaseEntity *pEntity{gamehelpers->ReferenceToEntity(ref)};
 			if(!pEntity) {
 				continue;
 			}
 
-			remove_hooks(pEntity);
+			remove_hooks(pEntity, false);
 		}
 	}
 
@@ -938,11 +934,11 @@ public:
 		entities.emplace_back(ref);
 	}
 
-	virtual void remove_hooks(CBaseEntity *pEntity)
+	virtual void remove_hooks(CBaseEntity *pEntity, bool delay_for_sp)
 	{
 		int ref = gamehelpers->EntityToReference(pEntity);
 
-		if(erase_obj) {
+		if(!delay_for_sp) {
 			auto it_objs{hookobjs.find(ref)};
 			if(it_objs != hookobjs.end()) {
 				std::vector<hookobj_t *> &vec{it_objs->second};
@@ -956,13 +952,13 @@ public:
 			}
 		}
 
-		if(erase_ent) {
-			auto it_ent{std::find(entities.begin(), entities.end(), ref)};
-			if(it_ent != entities.end()) {
-				entities.erase(it_ent);
-			}
+		auto it_ent{std::find(entities.begin(), entities.end(), ref)};
+		if(it_ent != entities.end()) {
+			entities.erase(it_ent);
 		}
 	}
+
+	virtual bool delay_remove() const { return false; }
 };
 
 struct custom_prop_info_t : public hookobj_t
@@ -1235,16 +1231,18 @@ struct custom_prop_info_t : public hookobj_t
 	{
 		CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
 		dtor(pEntity);
-		remove_hooks(pEntity);
+		remove_hooks(pEntity, false);
 		RETURN_META(MRES_HANDLED);
 	}
 
-	void remove_hooks(CBaseEntity *pEntity) override
+	void remove_hooks(CBaseEntity *pEntity, bool delay_for_sp) override
 	{
-		hookobj_t::remove_hooks(pEntity);
+		hookobj_t::remove_hooks(pEntity, delay_for_sp);
 
-		SH_REMOVE_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
-		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
+		if(!delay_for_sp) {
+			SH_REMOVE_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
+			SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
+		}
 	}
 
 	void add_hooks(CBaseEntity *pEntity)
@@ -1507,22 +1505,23 @@ struct serverclass_override_t : public hookobj_t
 	void HookEntityDtor()
 	{
 		CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
-		remove_hooks(pEntity);
+		remove_hooks(pEntity, false);
 		RETURN_META(MRES_HANDLED);
 	}
 
-	void remove_hooks(CBaseEntity *pEntity) override
+	void remove_hooks(CBaseEntity *pEntity, bool delay_for_sp) override
 	{
-		hookobj_t::remove_hooks(pEntity);
+		hookobj_t::remove_hooks(pEntity, delay_for_sp);
 
-		IServerNetworkable *pNet = pEntity->GetNetworkable();
-		SH_REMOVE_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
-		SH_REMOVE_HOOK(IServerNetworkable, GetServerClass, pNet, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
-		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
+		if(!delay_for_sp) {
+			SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
+			SH_REMOVE_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
+			SH_REMOVE_HOOK(IServerNetworkable, GetServerClass, pEntity->GetNetworkable(), SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
 
-		auto hsvcls_it{std::find(svcls_hooks.begin(), svcls_hooks.end(), gamehelpers->EntityToReference(pEntity))};
-		if(hsvcls_it != svcls_hooks.end()) {
-			svcls_hooks.erase(hsvcls_it);
+			auto hsvcls_it{std::find(svcls_hooks.begin(), svcls_hooks.end(), gamehelpers->EntityToReference(pEntity))};
+			if(hsvcls_it != svcls_hooks.end()) {
+				svcls_hooks.erase(hsvcls_it);
+			}
 		}
 	}
 
@@ -1722,7 +1721,9 @@ public:
 	cell_t data = 0;
 
 	std::vector<std::string> aliases{};
-	
+
+	ServerClass *svclass{nullptr};
+
 	custom_prop_info_t *custom_prop = nullptr;
 	serverclass_override_t *custom_server = nullptr;
 	
@@ -2173,7 +2174,7 @@ void custom_prop_info_t::do_override(int &base, CBaseEntity *pEntity)
 		was_overriden = true;
 	}
 	
-	//zero(pEntity);
+	zero(pEntity);
 	
 	add_hooks(pEntity);
 }
@@ -2292,15 +2293,18 @@ cell_t EntityFactoryDictionaryregister_based(IPluginContext *pContext, const cel
 	char *name = nullptr;
 	pContext->LocalToString(params[1], &name);
 	
-	IEntityFactory *factory = dictionary->FindFactory(name);
-	if(factory) {
+	if(dictionary->FindFactory(name) != nullptr) {
 		return pContext->ThrowNativeError("%s is already registered", name);
 	}
 
-	factory = (IEntityFactory *)params[2];
+	IEntityFactory *factory = (IEntityFactory *)params[2];
 	
 	sp_entity_factory *obj = new sp_entity_factory(name, factory);
-	
+
+	IServerNetworkable *net = factory->Create("__hack_getsvclass__");
+	obj->svclass = net->GetServerClass();
+	RemoveEntity(net->GetBaseEntity());
+
 	Handle_t hndl = handlesys->CreateHandle(factory_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;
 	obj->pContext = pContext;
@@ -2313,8 +2317,7 @@ cell_t EntityFactoryDictionaryregister_function(IPluginContext *pContext, const 
 	char *name = nullptr;
 	pContext->LocalToString(params[1], &name);
 	
-	IEntityFactory *factory = dictionary->FindFactory(name);
-	if(factory) {
+	if(dictionary->FindFactory(name) != nullptr) {
 		return pContext->ThrowNativeError("%s is already registered", name);
 	}
 	
@@ -2325,7 +2328,11 @@ cell_t EntityFactoryDictionaryregister_function(IPluginContext *pContext, const 
 	IPluginFunction *callback = pContext->GetFunctionById(params[2]);
 	
 	sp_entity_factory *obj = new sp_entity_factory(name, callback, params[3], params[4]);
-	
+
+	IServerNetworkable *net = obj->Create("__hack_getsvclass__");
+	obj->svclass = net->GetServerClass();
+	RemoveEntity(net->GetBaseEntity());
+
 	Handle_t hndl = handlesys->CreateHandle(factory_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;
 	obj->pContext = pContext;
@@ -2642,14 +2649,17 @@ cell_t CustomSendtablefrom_classname(IPluginContext *pContext, const cell_t *par
 
 	ServerClass *netclass = nullptr;
 	
-	if(strcmp(classname, "player") == 0) {
+	if(strcmp(classname, "player") == 0 ||
+		strcmp(classname, "tf_bot") == 0) {
 		netclass = CTFPlayer_ServerClass;
 	} else {
-		IServerNetworkable *net = factory->Create(classname);
-
-		netclass = net->GetServerClass();
-
-		RemoveEntity(net->GetBaseEntity());
+		if(!CEntityFactoryDictionary::is_factory_custom(factory)) {
+			IServerNetworkable *net = factory->Create("__hack_getsvclass__");
+			netclass = net->GetServerClass();
+			RemoveEntity(net->GetBaseEntity());
+		} else {
+			netclass = ((sp_entity_factory *)factory)->svclass;
+		}
 	}
 	
 	std::string clsname{classname};
@@ -2677,13 +2687,9 @@ cell_t CustomSendtablefrom_factory(IPluginContext *pContext, const cell_t *param
 	if(server_map.find(name) != server_map.end()) {
 		return pContext->ThrowNativeError("%s already has custom sendtable", name.c_str());
 	}
-	
-	IServerNetworkable *net = factory->Create(factory->name.c_str());
 
-	ServerClass *netclass = net->GetServerClass();
+	ServerClass *netclass{factory->svclass};
 
-	RemoveEntity(net->GetBaseEntity());
-	
 	serverclass_override_t *obj = new serverclass_override_t{factory, std::move(name), netclass};
 	Handle_t hndl = handlesys->CreateHandle(serverclass_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;
@@ -2954,20 +2960,18 @@ void Sample::OnEntityDestroyed(CBaseEntity *pEntity)
 
 	int ref = gamehelpers->EntityToReference(pEntity);
 
-	auto hobj_it{hookobjs.find(ref)};
-	if(hobj_it != hookobjs.end()) {
-		std::vector<hookobj_t *> &vec{hobj_it->second};
-		for(hookobj_t *obj : vec) {
-			obj->erase_ent = false;
-			obj->erase_obj = false;
-			obj->remove_hooks(pEntity);
+	auto hobjs_it{hookobjs.find(ref)};
+	if(hobjs_it != hookobjs.end()) {
+		std::vector<hookobj_t *> &vec{hobjs_it->second};
+		auto hobj_it{vec.begin()};
+		while(hobj_it != vec.end()) {
+			hookobj_t *obj{*hobj_it};
+			vec.erase(hobj_it);
+			obj->remove_hooks(pEntity, true);
 		}
-		hookobjs.erase(hobj_it);
-	}
-
-	auto hsvcls_it{std::find(svcls_hooks.begin(), svcls_hooks.end(), ref)};
-	if(hsvcls_it != svcls_hooks.end()) {
-		svcls_hooks.erase(hsvcls_it);
+		if(vec.empty()) {
+			hookobjs.erase(hobjs_it);
+		}
 	}
 }
 
