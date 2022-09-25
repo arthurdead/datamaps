@@ -291,7 +291,10 @@ public:
 	DECLARE_CLASS_NOBASE( CBaseEntity );
 	DECLARE_SERVERCLASS();
 	DECLARE_DATADESC();
-	
+
+	edict_t *edict()
+	{ return GetNetworkable()->GetEdict(); }
+
 	void PostConstructor(const char *classname)
 	{
 		call_vfunc<void, CBaseEntity, const char *>(this, CBaseEntityPostConstructor, classname);
@@ -356,6 +359,28 @@ public:
 		}
 		
 		return *(int *)((unsigned char *)this + m_iEFlagsOffset);
+	}
+
+	void DispatchUpdateTransmitState()
+	{
+
+	}
+
+	void AddIEFlags(int flags)
+	{
+		if(m_iEFlagsOffset == -1) {
+			sm_datatable_info_t info{};
+			datamap_t *pMap = gamehelpers->GetDataMap(this);
+			gamehelpers->FindDataMapInfo(pMap, "m_iEFlags", &info);
+			m_iEFlagsOffset = info.actual_offset;
+		}
+
+		*(int *)((unsigned char *)this + m_iEFlagsOffset) |= flags;
+
+		if ( flags & ( EFL_FORCE_CHECK_TRANSMIT | EFL_IN_SKYBOX ) )
+		{
+			DispatchUpdateTransmitState();
+		}
 	}
 	
 	int &GetNextThinkTick()
@@ -904,22 +929,12 @@ class hookobj_t;
 std::unordered_map<int, std::vector<hookobj_t *>> hookobjs{};
 std::vector<int> svcls_hooks{};
 
+SH_DECL_MANUALHOOK0_void(UpdateOnRemove, 0, 0, 0)
+
 class hookobj_t
 {
 public:
 	std::vector<int> entities{};
-
-	virtual ~hookobj_t()
-	{
-		for(int ref : entities) {
-			CBaseEntity *pEntity{gamehelpers->ReferenceToEntity(ref)};
-			if(!pEntity) {
-				continue;
-			}
-
-			remove_hooks(pEntity, false);
-		}
-	}
 
 	void add_hooks(CBaseEntity *pEntity)
 	{
@@ -932,15 +947,60 @@ public:
 		it_objs->second.emplace_back(this);
 
 		entities.emplace_back(ref);
+
+		SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &hookobj_t::HookEntityDtor), false);
+		SH_ADD_MANUALHOOK(UpdateOnRemove, pEntity, SH_MEMBER(this, &hookobj_t::HookEntityRemove), false);
 	}
 
-	virtual void remove_hooks(CBaseEntity *pEntity, bool delay_for_sp)
+	void HookEntityRemove()
 	{
-		int ref = gamehelpers->EntityToReference(pEntity);
+		CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
+		remove_hooks(pEntity, gamehelpers->EntityToReference(pEntity), remove_from_entity_destroyed);
+		RETURN_META(MRES_HANDLED);
+	}
 
-		if(!delay_for_sp) {
-			auto it_objs{hookobjs.find(ref)};
-			if(it_objs != hookobjs.end()) {
+	void HookEntityDtor()
+	{
+		CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
+		remove_hooks(pEntity, gamehelpers->EntityToReference(pEntity), remove_from_entity_dtor);
+		RETURN_META(MRES_HANDLED);
+	}
+
+	enum remove_from_t
+	{
+		remove_from_hook_dtor,
+		remove_from_entity_dtor,
+		remove_from_entity_destroyed,
+	};
+
+	void remove_all_hooks()
+	{
+		for(int ref : entities) {
+			CBaseEntity *pEntity{gamehelpers->ReferenceToEntity(ref)};
+			if(!pEntity) {
+				continue;
+			}
+
+			remove_hooks(pEntity, ref, remove_from_hook_dtor);
+		}
+
+		entities.clear();
+	}
+
+	virtual ~hookobj_t()
+	{
+		remove_all_hooks();
+	}
+
+	virtual void remove_hooks(CBaseEntity *pEntity, int ref, remove_from_t from)
+	{
+		if(from == remove_from_entity_destroyed) {
+			return;
+		}
+
+		auto it_objs{hookobjs.find(ref)};
+		if(it_objs != hookobjs.end()) {
+			if(from == remove_from_hook_dtor) {
 				std::vector<hookobj_t *> &vec{it_objs->second};
 				auto it_obj{std::find(vec.begin(), vec.end(), this)};
 				if(it_obj != vec.end()) {
@@ -949,22 +1009,27 @@ public:
 				if(vec.empty()) {
 					hookobjs.erase(it_objs);
 				}
+			} else {
+				hookobjs.erase(it_objs);
 			}
 		}
 
-		auto it_ent{std::find(entities.begin(), entities.end(), ref)};
-		if(it_ent != entities.end()) {
-			entities.erase(it_ent);
+		if(from == remove_from_entity_dtor) {
+			auto it_ent{std::find(entities.begin(), entities.end(), ref)};
+			if(it_ent != entities.end()) {
+				entities.erase(it_ent);
+			}
 		}
-	}
 
-	virtual bool delay_remove() const { return false; }
+		SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &hookobj_t::HookEntityDtor), false);
+		SH_REMOVE_MANUALHOOK(UpdateOnRemove, pEntity, SH_MEMBER(this, &hookobj_t::HookEntityRemove), false);
+	}
 };
 
 struct custom_prop_info_t : public hookobj_t
 {
 	bool was_overriden = false;
-	IEntityFactory *fac = nullptr;
+	IEntityFactory *hooked_fac = nullptr;
 	bool fac_is_sp = false;
 	custom_datamap_t map{};
 	using dataDesc_t = std::vector<custom_typedescription_t>;
@@ -1226,23 +1291,22 @@ struct custom_prop_info_t : public hookobj_t
 	{
 		RETURN_META_VALUE(MRES_SUPERCEDE, &map);
 	}
-	
-	void HookEntityDtor()
-	{
-		CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
-		dtor(pEntity);
-		remove_hooks(pEntity, false);
-		RETURN_META(MRES_HANDLED);
-	}
 
-	void remove_hooks(CBaseEntity *pEntity, bool delay_for_sp) override
-	{
-		hookobj_t::remove_hooks(pEntity, delay_for_sp);
+	void factory_removed(IEntityFactory *fac);
 
-		if(!delay_for_sp) {
-			SH_REMOVE_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
-			SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
+	void remove_hooks(CBaseEntity *pEntity, int ref, remove_from_t from) override
+	{
+		hookobj_t::remove_hooks(pEntity, ref, from);
+
+		if(from == remove_from_entity_destroyed) {
+			return;
 		}
+
+		if(from == remove_from_entity_dtor) {
+			dtor(pEntity);
+		}
+
+		SH_REMOVE_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
 	}
 
 	void add_hooks(CBaseEntity *pEntity)
@@ -1250,7 +1314,6 @@ struct custom_prop_info_t : public hookobj_t
 		hookobj_t::add_hooks(pEntity);
 
 		SH_ADD_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false);
-		SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookEntityDtor), false);
 	}
 	
 	void do_override(int &base, CBaseEntity *pEntity);
@@ -1501,27 +1564,27 @@ struct serverclass_override_t : public hookobj_t
 	{
 		RETURN_META_VALUE(MRES_SUPERCEDE, (ServerClass *)&cls);
 	}
-	
-	void HookEntityDtor()
+
+	void factory_removed(IEntityFactory *fac);
+
+	void remove_hooks(CBaseEntity *pEntity, int ref, remove_from_t from) override
 	{
-		CBaseEntity *pEntity = META_IFACEPTR(CBaseEntity);
-		remove_hooks(pEntity, false);
-		RETURN_META(MRES_HANDLED);
-	}
+		hookobj_t::remove_hooks(pEntity, ref, from);
 
-	void remove_hooks(CBaseEntity *pEntity, bool delay_for_sp) override
-	{
-		hookobj_t::remove_hooks(pEntity, delay_for_sp);
+		if(from != remove_from_entity_dtor) {
+			IServerNetworkable *pNet{pEntity->GetNetworkable()};
+			SH_REMOVE_HOOK(IServerNetworkable, GetServerClass, pNet, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
+		}
 
-		if(!delay_for_sp) {
-			SH_REMOVE_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
-			SH_REMOVE_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
-			SH_REMOVE_HOOK(IServerNetworkable, GetServerClass, pEntity->GetNetworkable(), SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
+		if(from == remove_from_entity_destroyed) {
+			return;
+		}
 
-			auto hsvcls_it{std::find(svcls_hooks.begin(), svcls_hooks.end(), gamehelpers->EntityToReference(pEntity))};
-			if(hsvcls_it != svcls_hooks.end()) {
-				svcls_hooks.erase(hsvcls_it);
-			}
+		SH_REMOVE_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
+
+		auto hsvcls_it{std::find(svcls_hooks.begin(), svcls_hooks.end(), ref)};
+		if(hsvcls_it != svcls_hooks.end()) {
+			svcls_hooks.erase(hsvcls_it);
 		}
 	}
 
@@ -1531,7 +1594,6 @@ struct serverclass_override_t : public hookobj_t
 
 		SH_ADD_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
 		SH_ADD_HOOK(IServerNetworkable, GetServerClass, pNet, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false);
-		SH_ADD_MANUALHOOK(GenericDtor, pEntity, SH_MEMBER(this, &serverclass_override_t::HookEntityDtor), false);
 
 		svcls_hooks.emplace_back(gamehelpers->EntityToReference(pEntity));
 	}
@@ -1661,7 +1723,7 @@ struct serverclass_override_t : public hookobj_t
 		}
 	}
 
-	IEntityFactory *fac = nullptr;
+	IEntityFactory *hooked_fac = nullptr;
 	bool fac_is_sp = false;
 	custom_ServerClass cls{};
 	custom_SendTable tbl{};
@@ -1793,29 +1855,39 @@ server_map_t server_map{};
 
 void CEntityFactoryDictionary::remove_factory(IEntityFactory *fac, const std::string &name)
 {
+	sp_entity_factory *sp_fac{nullptr};
+	if(CEntityFactoryDictionary::is_factory_custom(fac)) {
+		sp_fac = (sp_entity_factory *)fac;
+	}
+
 	info_map_t::iterator info_it{info_map.find(name)};
 	if(info_it != info_map.end()) {
 		custom_prop_info_t *prop{info_it->second};
-		prop->erase = false;
-		delete prop;
-		info_map.erase(info_it);
+		if(prop->hooked_fac == fac) {
+			if(sp_fac) {
+				sp_fac->custom_server = nullptr;
+			} else {
+				prop->factory_removed(fac);
+			}
+		}
 	}
-	
+
 	server_map_t::iterator server_it{server_map.find(name)};
 	if(server_it != server_map.end()) {
 		serverclass_override_t *prop{server_it->second};
-		prop->erase = false;
-		delete prop;
-		server_map.erase(server_it);
-	}
-	
-	m_Factories.Remove(name.c_str());
-	
-	if(CEntityFactoryDictionary::is_factory_custom(fac)) {
-		sp_entity_factory *sp_fac = (sp_entity_factory *)fac;
-		if(!sp_fac->dont_delete) {
-			delete sp_fac;
+		if(prop->hooked_fac == fac) {
+			if(sp_fac) {
+				sp_fac->custom_server = nullptr;
+			} else {
+				prop->factory_removed(fac);
+			}
 		}
+	}
+
+	m_Factories.Remove(name.c_str());
+
+	if(sp_fac && !sp_fac->dont_delete) {
+		delete sp_fac;
 	}
 }
 
@@ -1971,17 +2043,17 @@ void serverclass_override_t::init()
 static ServerClass *CBaseEntity_ServerClass = nullptr;
 
 serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_)
-	: fac{fac_}, clsname{std::move(clsname_)}, realcls{realcls_}
+	: hooked_fac{fac_}, clsname{std::move(clsname_)}, realcls{realcls_}
 {
-	if(CEntityFactoryDictionary::is_factory_custom(fac)) {
+	if(CEntityFactoryDictionary::is_factory_custom(hooked_fac)) {
 		fac_is_sp = true;
-		sp_entity_factory *spfac = (sp_entity_factory *)fac;
+		sp_entity_factory *spfac = (sp_entity_factory *)hooked_fac;
 		spfac->custom_server = this;
 	} else {
-		SH_ADD_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &serverclass_override_t::HookCreate), false);
+		SH_ADD_HOOK(IEntityFactory, Create, hooked_fac, SH_MEMBER(this, &serverclass_override_t::HookCreate), false);
 	}
 	
-	server_map[clsname] = this;
+	server_map.emplace(clsname, this);
 	
 	counterid = classoverridecounter++;
 	
@@ -2020,6 +2092,11 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 }
 
 extern void remove_serverclass_from_sm_cache(ServerClass *pMap);
+
+void serverclass_override_t::factory_removed(IEntityFactory *fac)
+{
+	SH_REMOVE_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &serverclass_override_t::HookCreate), false);
+}
 
 serverclass_override_t::~serverclass_override_t()
 {
@@ -2060,8 +2137,8 @@ serverclass_override_t::~serverclass_override_t()
 	
 	remove_serverclass_from_sm_cache((ServerClass *)&cls);
 	
-	if(!fac_is_sp) {
-		SH_REMOVE_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &serverclass_override_t::HookCreate), false);
+	if(!fac_is_sp && hooked_fac) {
+		factory_removed(hooked_fac);
 	}
 	
 	if(freehndl) {
@@ -2095,24 +2172,29 @@ void *HookPvAllocEntPrivateData(long cb)
 size_t datamapoverridecounter = 0;
 
 custom_prop_info_t::custom_prop_info_t(IEntityFactory *fac_, std::string &&clsname_)
-	: fac{fac_}, clsname{std::move(clsname_)}
+	: hooked_fac{fac_}, clsname{std::move(clsname_)}
 {
 	map.zero();
 	
-	if(CEntityFactoryDictionary::is_factory_custom(fac)) {
+	if(CEntityFactoryDictionary::is_factory_custom(hooked_fac)) {
 		fac_is_sp = true;
-		sp_entity_factory *spfac = (sp_entity_factory *)fac;
+		sp_entity_factory *spfac = (sp_entity_factory *)hooked_fac;
 		spfac->custom_prop = this;
 	} else {
-		SH_ADD_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &custom_prop_info_t::HookCreate), false);
+		SH_ADD_HOOK(IEntityFactory, Create, hooked_fac, SH_MEMBER(this, &custom_prop_info_t::HookCreate), false);
 	}
 	
-	info_map[clsname] = this;
+	info_map.emplace(clsname, this);
 	
 	counterid = datamapoverridecounter++;
 }
 
 extern void remove_datamap_from_sm_cache(datamap_t *pMap);
+
+void custom_prop_info_t::factory_removed(IEntityFactory *fac)
+{
+	SH_REMOVE_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &custom_prop_info_t::HookCreate), false);
+}
 
 custom_prop_info_t::~custom_prop_info_t()
 {
@@ -2124,8 +2206,8 @@ custom_prop_info_t::~custom_prop_info_t()
 	
 	remove_datamap_from_sm_cache(&map);
 	
-	if(!fac_is_sp) {
-		SH_REMOVE_HOOK(IEntityFactory, Create, fac, SH_MEMBER(this, &custom_prop_info_t::HookCreate), false);
+	if(!fac_is_sp && hooked_fac) {
+		factory_removed(hooked_fac);
 	}
 	
 	for(custom_typedescription_t &desc : dataDesc) {
@@ -2179,6 +2261,56 @@ void custom_prop_info_t::do_override(int &base, CBaseEntity *pEntity)
 	add_hooks(pEntity);
 }
 
+#define protected public
+#define private public
+#include <entitylist.h>
+#undef protected
+#undef private
+
+SH_DECL_HOOK2_void(CGlobalEntityList, OnAddEntity, SH_NOATTRIB, 0, IHandleEntity *, CBaseHandle);
+
+static bool ignore_entity_listeners{false};
+
+class CGlobalEntityListHack : public CGlobalEntityList
+{
+public:
+	void HookOnAddEntity( IHandleEntity *pEnt, CBaseHandle handle )
+	{
+		int i = handle.GetEntryIndex();
+
+		// record current list details
+		m_iNumEnts++;
+		if ( i > m_iHighestEnt )
+			m_iHighestEnt = i;
+
+		// If it's a CBaseEntity, notify the listeners.
+		CBaseEntity *pBaseEnt = static_cast<IServerUnknown*>(pEnt)->GetBaseEntity();
+		if ( pBaseEnt->edict() )
+			m_iNumEdicts++;
+		
+		// NOTE: Must be a CBaseEntity on server
+		Assert( pBaseEnt );
+		//DevMsg(2,"Created %s\n", pBaseEnt->GetClassname() );
+
+		if(!ignore_entity_listeners) {
+			for ( i = m_entityListeners.Count()-1; i >= 0; i-- )
+			{
+				m_entityListeners[i]->OnEntityCreated( pBaseEnt );
+			}
+		}
+
+		RETURN_META(MRES_SUPERCEDE);
+	}
+
+	void SendEntityListeners(CBaseEntity *pBaseEnt)
+	{
+		for ( int i = m_entityListeners.Count()-1; i >= 0; i-- )
+		{
+			m_entityListeners[i]->OnEntityCreated( pBaseEnt );
+		}
+	}
+};
+
 IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
 {
 	IServerNetworkable *net = nullptr;
@@ -2186,7 +2318,9 @@ IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
 	if(based != nullptr) {
 		curr_data_info = custom_prop;
 		curr_server_info = custom_server;
+		ignore_entity_listeners = true;
 		net = based->Create(pClassName);
+		ignore_entity_listeners = false;
 		curr_data_info = nullptr;
 		curr_server_info = nullptr;
 		CBaseEntity *pEntity = net->GetBaseEntity();
@@ -2197,6 +2331,7 @@ IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
 		if(custom_server) {
 			custom_server->do_override(last_cb, pEntity, net);
 		}
+		((CGlobalEntityListHack *)g_pEntityList)->SendEntityListeners(pEntity);
 	} else if(func != nullptr) {
 		cell_t res = 0;
 		int add_size{0};
@@ -2212,14 +2347,17 @@ IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
 		last_cb = size;
 		CBaseEntity *obj = (CBaseEntity *)res;
 		if(obj != nullptr) {
-			obj->PostConstructor(pClassName);
 			net = obj->GetNetworkable();
+			ignore_entity_listeners = true;
+			obj->PostConstructor(pClassName);
+			ignore_entity_listeners = false;
 			if(custom_prop) {
 				custom_prop->do_override(last_cb, obj);
 			}
 			if(custom_server) {
 				custom_server->do_override(last_cb, obj, net);
 			}
+			((CGlobalEntityListHack *)g_pEntityList)->SendEntityListeners(obj);
 		}
 	}
 	
@@ -2301,7 +2439,9 @@ cell_t EntityFactoryDictionaryregister_based(IPluginContext *pContext, const cel
 	
 	sp_entity_factory *obj = new sp_entity_factory(name, factory);
 
+	ignore_entity_listeners = true;
 	IServerNetworkable *net = factory->Create("__hack_getsvclass__");
+	ignore_entity_listeners = false;
 	obj->svclass = net->GetServerClass();
 	RemoveEntity(net->GetBaseEntity());
 
@@ -2329,7 +2469,9 @@ cell_t EntityFactoryDictionaryregister_function(IPluginContext *pContext, const 
 	
 	sp_entity_factory *obj = new sp_entity_factory(name, callback, params[3], params[4]);
 
+	ignore_entity_listeners = true;
 	IServerNetworkable *net = obj->Create("__hack_getsvclass__");
+	ignore_entity_listeners = false;
 	obj->svclass = net->GetServerClass();
 	RemoveEntity(net->GetBaseEntity());
 
@@ -2654,7 +2796,9 @@ cell_t CustomSendtablefrom_classname(IPluginContext *pContext, const cell_t *par
 		netclass = CTFPlayer_ServerClass;
 	} else {
 		if(!CEntityFactoryDictionary::is_factory_custom(factory)) {
+			ignore_entity_listeners = true;
 			IServerNetworkable *net = factory->Create("__hack_getsvclass__");
+			ignore_entity_listeners = false;
 			netclass = net->GetServerClass();
 			RemoveEntity(net->GetBaseEntity());
 		} else {
@@ -2958,21 +3102,7 @@ void Sample::OnEntityDestroyed(CBaseEntity *pEntity)
 		return;
 	}
 
-	int ref = gamehelpers->EntityToReference(pEntity);
 
-	auto hobjs_it{hookobjs.find(ref)};
-	if(hobjs_it != hookobjs.end()) {
-		std::vector<hookobj_t *> &vec{hobjs_it->second};
-		auto hobj_it{vec.begin()};
-		while(hobj_it != vec.end()) {
-			hookobj_t *obj{*hobj_it};
-			vec.erase(hobj_it);
-			obj->remove_hooks(pEntity, true);
-		}
-		if(vec.empty()) {
-			hookobjs.erase(hobjs_it);
-		}
-	}
 }
 
 void Sample::OnHandleDestroy(HandleType_t type, void *object)
@@ -2984,6 +3114,7 @@ void Sample::OnHandleDestroy(HandleType_t type, void *object)
 	} else if(type == datamap_handle) {
 		custom_prop_info_t *obj = (custom_prop_info_t *)object;
 		obj->freehndl = false;
+		obj->remove_all_hooks();
 		delete obj;
 	} else if(type == removal_handle) {
 		factory_removal_t *obj = (factory_removal_t *)object;
@@ -2991,6 +3122,7 @@ void Sample::OnHandleDestroy(HandleType_t type, void *object)
 	} else if(type == serverclass_handle) {
 		serverclass_override_t *obj = (serverclass_override_t *)object;
 		obj->freehndl = false;
+		obj->remove_all_hooks();
 		delete obj;
 	}
 }
@@ -3282,6 +3414,10 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 
 	g_pGameConf->GetOffset("CBaseEntity::PostConstructor", &CBaseEntityPostConstructor);
 
+	int offset{-1};
+	g_pGameConf->GetOffset("CBaseEntity::UpdateOnRemove", &offset);
+	SH_MANUALHOOK_RECONFIGURE(UpdateOnRemove, offset, 0, 0);
+
 	g_pGameConf->GetMemSig("SimThink_EntityChanged", &SimThink_EntityChangedPtr);
 	g_pGameConf->GetMemSig("AllocPooledString", &AllocPooledStringPtr);
 	g_pGameConf->GetMemSig("EntityFactoryDictionary", &EntityFactoryDictionaryPtr);
@@ -3322,8 +3458,10 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	pPhysicsRunSpecificThink = DETOUR_CREATE_MEMBER(PhysicsRunSpecificThink, "CBaseEntity::PhysicsRunSpecificThink")
 	pPhysicsRunSpecificThink->EnableDetour();
 	
-	g_pEntityList = reinterpret_cast<CBaseEntityList *>(gamehelpers->GetGlobalEntityList());
-	
+	g_pEntityList = reinterpret_cast<CGlobalEntityList *>(gamehelpers->GetGlobalEntityList());
+
+	SH_ADD_HOOK(CGlobalEntityList, OnAddEntity, ((CGlobalEntityList *)g_pEntityList), SH_MEMBER(((CGlobalEntityListHack *)g_pEntityList), &CGlobalEntityListHack::HookOnAddEntity), false);
+
 #if SOURCE_ENGINE == SE_LEFT4DEAD2
 	dictionary = (void_to_func<CEntityFactoryDictionary *(*)()>(EntityFactoryDictionaryPtr))();
 	dictionary->init_hooks();
@@ -3349,6 +3487,8 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 
 void Sample::SDK_OnUnload()
 {
+	SH_REMOVE_HOOK(CGlobalEntityList, OnAddEntity, ((CGlobalEntityList *)g_pEntityList), SH_MEMBER(((CGlobalEntityListHack *)g_pEntityList), &CGlobalEntityListHack::HookOnAddEntity), false);
+
 	SendTable_GetCRC_detour->Destroy();
 	SV_CreateBaseline_detour->Destroy();
 	pSVC_ClassInfoWriteToBuffer->Destroy();

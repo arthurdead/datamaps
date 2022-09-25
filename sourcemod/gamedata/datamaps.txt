@@ -110,6 +110,10 @@
 			{
 				"linux" "27"
 			}
+			"CBaseEntity::UpdateOnRemove"
+			{
+				"linux" "109"
+			}
 		}
 	}
 }
