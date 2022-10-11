@@ -1937,8 +1937,11 @@ public:
 	
 	void decrement_svclasses()
 	{
-		--serverclasses;
-		serverclassbits = Q_log2( serverclasses ) + 1;
+		if(--serverclasses > 0) {
+			serverclassbits = Q_log2( serverclasses ) + 1;
+		} else {
+			serverclassbits = 0;
+		}
 	}
 };
 
