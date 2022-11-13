@@ -47,10 +47,15 @@
 #define GLOWS_ENABLE
 #define USE_NAV_MESH
 #define RAD_TELEMETRY_DISABLED
+#define GAME_DLL
 
 #include <string>
+#include <string_view>
 #include <vector>
 #include <unordered_map>
+
+using namespace std::literals::string_literals;
+using namespace std::literals::string_view_literals;
 
 #include "extension.h"
 #include <ISDKTools.h>
@@ -801,7 +806,22 @@ struct custom_typedescription_t : typedescription_t
 	{
 		fieldName = nullptr;
 	}
-	
+
+	custom_typedescription_t(const custom_typedescription_t &) = delete;
+	custom_typedescription_t &operator=(const custom_typedescription_t &) = delete;
+
+	custom_typedescription_t(custom_typedescription_t &&other)
+	{ operator=(std::move(other)); }
+
+	custom_typedescription_t &operator=(custom_typedescription_t &&other)
+	{
+		const char *pFieldName = other.fieldName;
+		typedescription_t::operator=(std::move(other));
+		fieldName = pFieldName;
+		other.fieldName = nullptr;
+		return *this;
+	}
+
 	void set_name(const std::string &name)
 	{
 		clear_name();
@@ -822,7 +842,7 @@ struct custom_typedescription_t : typedescription_t
 	
 	~custom_typedescription_t()
 	{
-		//clear_name();
+		clear_name();
 	}
 	
 	void zero()
@@ -851,6 +871,9 @@ struct custom_typedescription_t : typedescription_t
 #endif
 	}
 };
+
+static_assert(sizeof(custom_typedescription_t) == sizeof(typedescription_t));
+static_assert(alignof(custom_typedescription_t) == alignof(typedescription_t));
 
 #if SOURCE_ENGINE == SE_LEFT4DEAD2
 //TODO!!! m_pOptimizedDataMap
@@ -894,6 +917,9 @@ struct custom_datamap_t : datamap_t
 	}
 };
 
+static_assert(sizeof(custom_datamap_t) == sizeof(datamap_t));
+static_assert(alignof(custom_datamap_t) == alignof(datamap_t));
+
 SH_DECL_HOOK1(IEntityFactory, Create, SH_NOATTRIB, 0, IServerNetworkable *, const char *);
 SH_DECL_HOOK1(IVEngineServer, PvAllocEntPrivateData, SH_NOATTRIB, 0, void *, long);
 SH_DECL_HOOK0(CBaseEntity, GetDataDescMap, SH_NOATTRIB, 0, datamap_t *);
@@ -930,12 +956,33 @@ public:
 	struct hookinfo_t
 	{
 		std::vector<int> hookids{};
+		std::vector<int> hookids_late{};
+
+		~hookinfo_t()
+		{
+			for(int id : hookids) {
+				SH_REMOVE_HOOK_ID(id);
+			}
+
+			for(int id : hookids_late) {
+				SH_REMOVE_HOOK_ID(id);
+			}
+		}
 
 		void remove_all()
 		{
 			for(int id : hookids) {
 				SH_REMOVE_HOOK_ID(id);
 			}
+			hookids.clear();
+		}
+
+		void remove_all_late()
+		{
+			for(int id : hookids_late) {
+				SH_REMOVE_HOOK_ID(id);
+			}
+			hookids_late.clear();
 		}
 	};
 	std::unordered_map<int, hookinfo_t> entities{};
@@ -951,7 +998,7 @@ public:
 		it_objs->second.emplace_back(this);
 
 		hookinfo_t info{};
-		info.hookids.emplace_back(SH_ADD_MANUALHOOK(UpdateOnRemove, pEntity, SH_MEMBER(this, &hookobj_t::HookEntityRemoved), true));
+		info.hookids.emplace_back(SH_ADD_MANUALHOOK(UpdateOnRemove, pEntity, SH_MEMBER(this, &hookobj_t::HookEntityRemoved), false));
 		return (*entities.emplace(ref, std::move(info)).first).second;
 	}
 
@@ -965,19 +1012,28 @@ public:
 		if(it != entities.end()) {
 			it->second.remove_all();
 			hooks_removed(pEntity, ref);
+		}
+
+		SH_MCALL(pEntity, UpdateOnRemove)();
+
+		if(it != entities.end()) {
+			it->second.remove_all_late();
+			hooks_removed_late(pEntity, ref);
 			entities.erase(it);
 		}
 
-		RETURN_META(MRES_HANDLED);
+		RETURN_META(MRES_SUPERCEDE);
 	}
 
 	void remove_all_hooks()
 	{
 		for(auto it : entities) {
 			it.second.remove_all();
+			it.second.remove_all_late();
 			CBaseEntity *pEntity = gamehelpers->ReferenceToEntity(it.first);
 			if(pEntity) {
 				hooks_removed(pEntity, it.first);
+				hooks_removed_late(pEntity, it.first);
 			}
 		}
 
@@ -987,6 +1043,11 @@ public:
 	virtual ~hookobj_t()
 	{
 		remove_all_hooks();
+	}
+
+	virtual void hooks_removed_late(CBaseEntity *pEntity, int ref)
+	{
+
 	}
 
 	virtual void hooks_removed(CBaseEntity *pEntity, int ref)
@@ -1207,10 +1268,10 @@ struct custom_prop_info_t : public hookobj_t
 	{
 		dataDesc.emplace_back();
 		custom_typedescription_t &desc = dataDesc.back();
+		desc.zero();
 		
 		desc.set_name(name);
 		
-		desc.get_offset() = size;
 		desc.fieldSize = num;
 		
 		desc.fieldType = type;
@@ -1258,9 +1319,9 @@ struct custom_prop_info_t : public hookobj_t
 			}
 		}
 		
-		size += desc.fieldSizeInBytes;
+		desc.get_offset() = size;
 		
-		desc.zero();
+		size += desc.fieldSizeInBytes;
 		
 		map.dataDesc = (typedescription_t *)dataDesc.data();
 		++map.dataNumFields;
@@ -1276,6 +1337,11 @@ struct custom_prop_info_t : public hookobj_t
 	void hooks_removed(CBaseEntity *pEntity, int ref) override
 	{
 		hookobj_t::hooks_removed(pEntity, ref);
+	}
+
+	void hooks_removed_late(CBaseEntity *pEntity, int ref) override
+	{
+		hookobj_t::hooks_removed_late(pEntity, ref);
 
 		dtor(pEntity);
 	}
@@ -1283,7 +1349,7 @@ struct custom_prop_info_t : public hookobj_t
 	void add_hooks(CBaseEntity *pEntity)
 	{
 		hookinfo_t &info{hookobj_t::add_hooks(pEntity)};
-		info.hookids.emplace_back(SH_ADD_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false));
+		info.hookids_late.emplace_back(SH_ADD_HOOK(CBaseEntity, GetDataDescMap, pEntity, SH_MEMBER(this, &custom_prop_info_t::HookGetDataDescMap), false));
 	}
 
 	void do_override(int &base, CBaseEntity *pEntity);
@@ -1333,6 +1399,9 @@ public:
 	// This is an index into the network string table (sv.GetInstanceBaselineTable()).
 	int							m_InstanceBaselineIndex; // INVALID_STRING_INDEX if not initialized yet.
 };
+
+static_assert(sizeof(custom_ServerClass) == sizeof(ServerClass));
+static_assert(alignof(custom_ServerClass) == alignof(ServerClass));
 
 SendProp *UTIL_FindInSendTable(SendTable *pTable, const char *name, bool recursive, bool ignoreexclude)
 {
@@ -1517,11 +1586,12 @@ public:
 	}
 };
 
+static_assert(sizeof(custom_SendTable) == sizeof(SendTable));
+static_assert(alignof(custom_SendTable) == alignof(SendTable));
+
 extern float AssignRangeMultiplier( int nBits, double range );
 
 static const CStandardSendProxies *std_proxies{nullptr};
-
-#define SPROP_HACK_ABSOFFSET (1 << SPROP_NUMFLAGBITS)
 
 void SendProxy_EHandleToInt( const SendProp *pProp, const void *pStruct, const void *pVarData, DVariant *pOut, int iElement, int objectID)
 {
@@ -1537,6 +1607,141 @@ void SendProxy_EHandleToInt( const SendProp *pProp, const void *pStruct, const v
 		pOut->m_Int = INVALID_NETWORKED_EHANDLE_VALUE;
 	}
 }
+
+static void SendProxy_Empty( const SendProp *pProp, const void *pStruct, const void *pData, DVariant *pOut, int iElement, int objectID)
+{
+}
+
+class custom_SendProp : public SendProp
+{
+public:
+	struct extra_data_t
+	{
+		bool absoffset = false;
+		fieldtype_t type = FIELD_VOID;
+		int elementCount = 1;
+	};
+
+	custom_SendProp(const custom_SendProp &) = delete;
+	custom_SendProp &operator=(const custom_SendProp &) = delete;
+
+	custom_SendProp(custom_SendProp &&other)
+	{ operator=(std::move(other)); }
+
+	custom_SendProp &operator=(custom_SendProp &&other)
+	{
+		const void *pExtraData = other.GetExtraData();
+		const char *pVarName = other.m_pVarName;
+		SendProp::operator=(std::move(other));
+		m_pVarName = pVarName;
+		other.m_pVarName = nullptr;
+		SetExtraData(pExtraData);
+		other.SetExtraData(nullptr);
+		return *this;
+	}
+
+	void set_name(const std::string &name)
+	{
+		clear_name();
+		
+		size_t len = name.length();
+		m_pVarName = (char *)malloc(len+1);
+		strncpy((char *)m_pVarName, name.c_str(), len);
+		((char *)m_pVarName)[len] = '\0';
+	}
+	
+	void clear_name()
+	{
+		if(m_pVarName != nullptr) {
+			free((void *)m_pVarName);
+		}
+		m_pVarName = nullptr;
+	}
+
+	custom_SendProp()
+		: SendProp{}
+	{
+		m_pVarName = nullptr;
+
+		SetExtraData(new extra_data_t{});
+	}
+
+	~custom_SendProp()
+	{
+		clear_name();
+
+		delete (extra_data_t *)GetExtraData();
+	}
+
+	extra_data_t &extra_data()
+	{ return *(extra_data_t *)GetExtraData(); }
+};
+
+static_assert(sizeof(custom_SendProp) == sizeof(SendProp));
+static_assert(alignof(custom_SendProp) == alignof(SendProp));
+
+char *UTIL_SendFlagsToString(int flags, int type);
+
+template<>
+FORCEINLINE void NetworkVarConstruct<QAngle>( QAngle &x ) { x = QAngle(); }
+
+class NetworkVar_Generic
+{
+public:
+	static inline void NetworkStateChanged(void *ptr)
+	{
+	}
+};
+
+template <typename T>
+class NetworkVar_ArrayUnknownSize
+{
+public:
+	static size_t size(size_t S)
+	{
+		return (sizeof(T) * S);
+	}
+	inline NetworkVar_ArrayUnknownSize(size_t S)
+	{
+		for ( int i = 0 ; i < S ; ++i ) {
+			NetworkVarConstruct( GetPtr()[i] );
+		}
+	}
+	void Destruct(size_t S)
+	{
+		for ( int i = 0 ; i < S ; ++i ) {
+			GetPtr()[i].~T();
+		}
+	}
+	const T& operator[]( int i ) const
+	{
+		return Get( i );
+	}
+	const T& Get( int i ) const
+	{
+		return GetPtr()[i];
+	}
+	T& GetForModify( int i )
+	{
+		NetworkStateChanged( i );
+		return GetPtr()[i];
+	}
+	void Set( int i, const T &val )
+	{
+		if( memcmp( &GetPtr()[i], &val, sizeof(T) ) )
+		{
+			NetworkStateChanged( i );
+			GetPtr()[i] = val;
+		}
+	}
+	const T* Base() const { return GetPtr(); }
+protected:
+	inline void NetworkStateChanged( int net_change_index )
+	{
+	}
+	T *GetPtr()
+	{ return (T *)this; }
+};
 
 struct serverclass_override_t : public hookobj_t
 {
@@ -1555,6 +1760,13 @@ struct serverclass_override_t : public hookobj_t
 	void hooks_removed(CBaseEntity *pEntity, int ref) override
 	{
 		hookobj_t::hooks_removed(pEntity, ref);
+	}
+
+	void hooks_removed_late(CBaseEntity *pEntity, int ref) override
+	{
+		hookobj_t::hooks_removed_late(pEntity, ref);
+
+		dtor(pEntity);
 
 		auto hsvcls_it{std::find(svcls_hooks.begin(), svcls_hooks.end(), ref)};
 		if(hsvcls_it != svcls_hooks.end()) {
@@ -1565,8 +1777,8 @@ struct serverclass_override_t : public hookobj_t
 	void add_hooks(CBaseEntity *pEntity, IServerNetworkable *pNet)
 	{
 		hookinfo_t &info{hookobj_t::add_hooks(pEntity)};
-		info.hookids.emplace_back(SH_ADD_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false));
-		info.hookids.emplace_back(SH_ADD_HOOK(IServerNetworkable, GetServerClass, pNet, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false));
+		info.hookids_late.emplace_back(SH_ADD_HOOK(CBaseEntity, GetServerClass, pEntity, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false));
+		info.hookids_late.emplace_back(SH_ADD_HOOK(IServerNetworkable, GetServerClass, pNet, SH_MEMBER(this, &serverclass_override_t::HookGetServerClass), false));
 
 		svcls_hooks.emplace_back(gamehelpers->EntityToReference(pEntity));
 	}
@@ -1581,48 +1793,326 @@ struct serverclass_override_t : public hookobj_t
 	
 	void init();
 
-	SendProp *emplace_prop()
+	custom_SendProp *emplace_prop()
 	{
-		SendProp *prop = &props.emplace_back();
+		custom_SendProp *prop = &props.emplace_back();
 		update_dt();
 		return prop;
 	}
 
 	void update_dt()
 	{
-		tbl.m_pProps = props.data();
+		tbl.m_pProps = (SendProp *)props.data();
 		tbl.m_nProps = props.size();
+	}
+
+	template <typename T>
+	using netvar_t = CNetworkVarBase<T, NetworkVar_Generic>;
+
+	template <typename T>
+	using netvar_vec_t = CNetworkVectorBase<T, NetworkVar_Generic>;
+
+	template <typename T>
+	using netvar_ehndl_t = CNetworkHandleBase<T, NetworkVar_Generic>;
+
+	template <typename T>
+	using netvar_arr_t = NetworkVar_ArrayUnknownSize<T>;
+
+	void dtor(CBaseEntity *pEntity)
+	{
+		for(std::size_t i{1}; i < props.size(); ++i) {
+			custom_SendProp &prop{props[i]};
+			if(prop.extra_data().absoffset) {
+				continue;
+			}
+			int offset = prop.GetOffset();
+			custom_SendProp::extra_data_t &data{prop.extra_data()};
+			unsigned char *ptr = (((unsigned char *)pEntity) + offset);
+			switch(data.type) {
+				case FIELD_VECTOR: {
+					bool ang = (prop.m_fLowValue == 0.0f && prop.m_fHighValue == 360.0f);
+					if(ang) {
+						if(data.elementCount == 1) {
+							((netvar_vec_t<QAngle> *)ptr)->~netvar_vec_t<QAngle>();
+						} else {
+							((netvar_arr_t<QAngle> *)ptr)->Destruct(data.elementCount);
+						}
+					} else {
+						if(data.elementCount == 1) {
+							((netvar_vec_t<Vector> *)ptr)->~netvar_vec_t<Vector>();
+						} else {
+							((netvar_arr_t<Vector> *)ptr)->Destruct(data.elementCount);
+						}
+					}
+				} break;
+				case FIELD_POSITION_VECTOR: {
+					if(data.elementCount == 1) {
+						((netvar_vec_t<Vector> *)ptr)->~netvar_vec_t<Vector>();
+					} else {
+						((netvar_arr_t<Vector> *)ptr)->Destruct(data.elementCount);
+					}
+				} break;
+				case FIELD_FLOAT: {
+					if(data.elementCount == 1) {
+						((netvar_t<float> *)ptr)->~netvar_t<float>();
+					} else {
+						((netvar_arr_t<float> *)ptr)->Destruct(data.elementCount);
+					}
+				} break;
+				case FIELD_EHANDLE: {
+					if(data.elementCount == 1) {
+						((netvar_ehndl_t<EHANDLE> *)ptr)->~netvar_ehndl_t<EHANDLE>();
+					} else {
+						((netvar_arr_t<EHANDLE> *)ptr)->Destruct(data.elementCount);
+					}
+				} break;
+				case FIELD_BOOLEAN: {
+					if(data.elementCount == 1) {
+						((netvar_t<bool> *)ptr)->~netvar_t<bool>();
+					} else {
+						((netvar_arr_t<bool> *)ptr)->Destruct(data.elementCount);
+					}
+				} break;
+				case FIELD_SHORT: {
+					if(data.elementCount == 1) {
+						((netvar_t<short> *)ptr)->~netvar_t<short>();
+					} else {
+						((netvar_arr_t<short> *)ptr)->Destruct(data.elementCount);
+					}
+				} break;
+				case FIELD_INTEGER: {
+					if(data.elementCount == 1) {
+						((netvar_t<int> *)ptr)->~netvar_t<int>();
+					} else {
+						((netvar_arr_t<int> *)ptr)->Destruct(data.elementCount);
+					}
+				} break;
+			}
+		}
+	}
+
+	void zero(CBaseEntity *pEntity)
+	{
+		for(std::size_t i{1}; i < props.size(); ++i) {
+			custom_SendProp &prop{props[i]};
+			if(prop.extra_data().absoffset) {
+				continue;
+			}
+			int offset = prop.GetOffset();
+			custom_SendProp::extra_data_t &data{prop.extra_data()};
+			unsigned char *ptr = (((unsigned char *)pEntity) + offset);
+			switch(data.type) {
+				case FIELD_VECTOR: {
+					bool ang = (prop.m_fLowValue == 0.0f && prop.m_fHighValue == 360.0f);
+					if(ang) {
+						if(data.elementCount == 1) {
+							new (ptr) netvar_vec_t<QAngle>{};
+						} else {
+							new (ptr) netvar_arr_t<QAngle>{data.elementCount};
+						}
+					} else {
+						if(data.elementCount == 1) {
+							new (ptr) netvar_vec_t<Vector>{};
+						} else {
+							new (ptr) netvar_arr_t<Vector>{data.elementCount};
+						}
+					}
+				} break;
+				case FIELD_POSITION_VECTOR: {
+					if(data.elementCount == 1) {
+						new (ptr) netvar_vec_t<Vector>{};
+					} else {
+						new (ptr) netvar_arr_t<Vector>{data.elementCount};
+					}
+				} break;
+				case FIELD_FLOAT: {
+					if(data.elementCount == 1) {
+						new (ptr) netvar_t<float>{};
+					} else {
+						new (ptr) netvar_arr_t<float>{data.elementCount};
+					}
+				} break;
+				case FIELD_EHANDLE: {
+					if(data.elementCount == 1) {
+						new (ptr) netvar_ehndl_t<EHANDLE>{};
+					} else {
+						new (ptr) netvar_arr_t<EHANDLE>{data.elementCount};
+					}
+				} break;
+				case FIELD_BOOLEAN: {
+					if(data.elementCount == 1) {
+						new (ptr) netvar_t<bool>{};
+					} else {
+						new (ptr) netvar_arr_t<bool>{data.elementCount};
+					}
+				} break;
+				case FIELD_SHORT: {
+					if(data.elementCount == 1) {
+						new (ptr) netvar_t<short>{};
+					} else {
+						new (ptr) netvar_arr_t<short>{data.elementCount};
+					}
+				} break;
+				case FIELD_INTEGER: {
+					if(data.elementCount == 1) {
+						new (ptr) netvar_t<int>{};
+					} else {
+						new (ptr) netvar_arr_t<int>{data.elementCount};
+					}
+				} break;
+			}
+		}
 	}
 
 	void update_offsets(int &base)
 	{
 		for(std::size_t i{1}; i < props.size(); ++i) {
-			SendProp &prop{props[i]};
-			int flags = prop.GetFlags();
-			if(flags & SPROP_HACK_ABSOFFSET) {
-				flags &= ~SPROP_HACK_ABSOFFSET;
-				//prop.SetFlags(flags);
-			} else {
+			custom_SendProp &prop{props[i]};
+			if(prop.GetType() == DPT_Array) {
+				custom_SendProp &child{props[i-1]};
+				child.SetInsideArray();
+				prop.SetArrayProp(&child);
+				continue;
+			}
+			if(!prop.extra_data().absoffset) {
 				prop.SetOffset(base + prop.GetOffset());
 			}
 		}
 		base += size;
 	}
 
-	std::vector<std::unique_ptr<std::string>> prop_names;
-
-	void add_prop_float(std::string &&name, float fLowValue, float fHighValue, int nBits, int flags)
+	custom_SendProp &add_prop_array(const std::string &name, int elementCount, int elementStride)
 	{
-		SendProp &prop{*emplace_prop()};
+		custom_SendProp &prop{*emplace_prop()};
 
-		prop.SetOffset(size);
+		prop.set_name(std::move(name));
 
-		prop.m_pVarName = prop_names.emplace_back(new std::string{std::move(name)}).get()->c_str();
+		prop.SetProxyFn(SendProxy_Empty);
+
+		prop.m_Type = DPT_Array;
+		prop.m_nElements = elementCount;
+		prop.m_ElementStride = elementStride;
+
+		prop.m_pArrayProp = nullptr;
+
+		prop.SetArrayLengthProxy( nullptr );
+
+		return prop;
+	}
+
+	void setup_array(const std::string &name, custom_SendProp &prop, int elementCount, int elementStride)
+	{
+		if(elementCount <= 1) {
+			return;
+		}
+
+		prop.extra_data().elementCount = elementCount;
+
+		prop.SetInsideArray();
+
+		custom_SendProp &arr{add_prop_array(name, elementCount, elementStride)};
+		arr.SetArrayProp(&prop);
+	}
+
+	void add_prop_qangles(const std::string &name, int nBits, int flags, int elementCount, int offset)
+	{
+		if(nBits == 32) {
+			flags |= SPROP_NOSCALE;
+		}
+
+		custom_SendProp &prop{*emplace_prop()};
+
+		prop.set_name(name);
 
 		prop.SetFlags(flags);
 
-		prop.SetProxyFn(std_proxies->m_FloatToFloat);
+		if(offset != -1) {
+			prop.extra_data().absoffset = true;
+		}
 
+		prop.SetProxyFn(SendProxy_QAngles);
+
+		prop.m_nBits = nBits;
+
+		prop.m_fLowValue = 0.0f;
+		prop.m_fHighValue = 360.0f;
+		prop.m_fHighLowMul = AssignRangeMultiplier(nBits, 360.0f);
+		prop.m_Type = DPT_Vector;
+
+		int sizeofVar = sizeof(QAngle);
+
+		if(offset == -1) {
+			prop.SetOffset(size);
+
+			if(elementCount == 1) {
+				size += sizeof(netvar_vec_t<QAngle>);
+			} else {
+				size += netvar_arr_t<QAngle>::size(elementCount);
+			}
+		} else {
+			prop.SetOffset(offset);
+		}
+
+		prop.extra_data().type = FIELD_VECTOR;
+
+		setup_array(name, prop, elementCount, sizeofVar);
+	}
+
+	void add_prop_vector(const std::string &name, float fLowValue, float fHighValue, int nBits, int flags, int elementCount, int offset)
+	{
+		if(nBits == 32) {
+			flags |= SPROP_NOSCALE;
+		}
+
+		int actual_bits{nBits};
+		if(flags & (SPROP_COORD|SPROP_NOSCALE|SPROP_NORMAL|SPROP_COORD_MP|SPROP_COORD_MP_LOWPRECISION|SPROP_COORD_MP_INTEGRAL)) {
+			actual_bits = 0;
+		}
+
+		custom_SendProp &prop{*emplace_prop()};
+
+		prop.set_name(name);
+
+		prop.SetFlags(flags);
+
+		if(offset != -1) {
+			prop.extra_data().absoffset = true;
+		}
+
+		prop.SetProxyFn(std_proxies->m_VectorToVector);
+
+		prop.m_nBits = actual_bits;
+
+		prop.m_fLowValue = fLowValue;
+		prop.m_fHighValue = fHighValue;
+		prop.m_fHighLowMul = AssignRangeMultiplier(nBits, fHighValue - fLowValue);
+		prop.m_Type = DPT_Vector;
+
+		int sizeofVar = sizeof(Vector);
+
+		if(offset == -1) {
+			prop.SetOffset(size);
+
+			if(elementCount == 1) {
+				size += sizeof(netvar_vec_t<Vector>);
+			} else {
+				size += netvar_arr_t<Vector>::size(elementCount);
+			}
+		} else {
+			prop.SetOffset(offset);
+		}
+
+		if(flags & (SPROP_COORD|SPROP_COORD_MP|SPROP_COORD_MP_LOWPRECISION|SPROP_COORD_MP_INTEGRAL)) {
+			prop.extra_data().type = FIELD_POSITION_VECTOR;
+		} else {
+			prop.extra_data().type = FIELD_VECTOR;
+		}
+
+		setup_array(name, prop, elementCount, sizeofVar);
+	}
+
+	void add_prop_float(const std::string &name, float fLowValue, float fHighValue, int nBits, int flags, int elementCount, int offset)
+	{
 		if(nBits <= 0 || nBits == 32) {
 			flags |= SPROP_NOSCALE;
 			fLowValue = 0.0f;
@@ -1639,23 +2129,70 @@ struct serverclass_override_t : public hookobj_t
 			}
 		}
 
-		if(prop.GetFlags() & (SPROP_COORD|SPROP_NOSCALE|SPROP_NORMAL|SPROP_COORD_MP|SPROP_COORD_MP_LOWPRECISION|SPROP_COORD_MP_INTEGRAL)) {
-			prop.m_nBits = 0;
-		} else {
-			prop.m_nBits = nBits;
+		int actual_bits{nBits};
+		if(flags & (SPROP_COORD|SPROP_NOSCALE|SPROP_NORMAL|SPROP_COORD_MP|SPROP_COORD_MP_LOWPRECISION|SPROP_COORD_MP_INTEGRAL)) {
+			actual_bits = 0;
 		}
+
+		custom_SendProp &prop{*emplace_prop()};
+
+		prop.set_name(name);
+
+		if(offset != -1) {
+			prop.extra_data().absoffset = true;
+		}
+
+		prop.SetProxyFn(std_proxies->m_FloatToFloat);
+
+		prop.SetFlags(flags);
+
+		prop.m_nBits = actual_bits;
 
 		prop.m_fLowValue = fLowValue;
 		prop.m_fHighValue = fHighValue;
-		prop.m_fHighLowMul = AssignRangeMultiplier(prop.m_nBits, prop.m_fHighValue - prop.m_fLowValue);
+		prop.m_fHighLowMul = AssignRangeMultiplier(nBits, fHighValue - fLowValue);
 		prop.m_Type = DPT_Float;
 
-		size += sizeof(float);
+		int sizeofVar = sizeof(float);
+
+		if(offset == -1) {
+			prop.SetOffset(size);
+
+			if(elementCount == 1) {
+				size += sizeof(netvar_t<float>);
+			} else {
+				size += netvar_arr_t<float>::size(elementCount);
+			}
+		} else {
+			prop.SetOffset(offset);
+		}
+
+		prop.extra_data().type = FIELD_FLOAT;
+
+		setup_array(name, prop, elementCount, sizeofVar);
 	}
 
-	void add_prop_int(std::string &&name, int sizeofVar, int nBits, int flags, int offset, SendVarProxyFn proxy)
+	custom_SendProp &add_prop_int(const std::string &name, int sizeofVar, int nBits, int flags, SendVarProxyFn proxy, int elementCount, int offset)
 	{
-		SendProp &prop{*emplace_prop()};
+		if(nBits <= 0) {
+			nBits = (sizeofVar * 8);
+		}
+
+		custom_SendProp &prop{*emplace_prop()};
+
+		prop.set_name(name);
+
+		prop.SetFlags(flags);
+
+		if(offset != -1) {
+			prop.extra_data().absoffset = true;
+		}
+
+		prop.SetProxyFn(proxy);
+
+		prop.m_nBits = nBits;
+
+		prop.m_Type = DPT_Int;
 
 		if(offset == -1) {
 			prop.SetOffset(size);
@@ -1663,58 +2200,91 @@ struct serverclass_override_t : public hookobj_t
 			prop.SetOffset(offset);
 		}
 
-		prop.m_pVarName = prop_names.emplace_back(new std::string{std::move(name)}).get()->c_str();
+		if(sizeofVar == sizeof(EHANDLE) &&
+			nBits == NUM_NETWORKED_EHANDLE_BITS &&
+			proxy == SendProxy_EHandleToInt &&
+			(flags & SPROP_UNSIGNED)) {
+			prop.extra_data().type = FIELD_EHANDLE;
 
-		if(offset == -1) {
-			prop.SetFlags(flags);
+			if(offset == -1) {
+				if(elementCount == 1) {
+					size += sizeof(netvar_ehndl_t<EHANDLE>);
+				} else {
+					size += netvar_arr_t<EHANDLE>::size(elementCount);
+				}
+			}
 		} else {
-			prop.SetFlags(flags|SPROP_HACK_ABSOFFSET);
+			switch(sizeofVar) {
+				case sizeof(bool): {
+					prop.extra_data().type = FIELD_BOOLEAN;
+
+					if(offset == -1) {
+						if(elementCount == 1) {
+							size += sizeof(netvar_t<float>);
+						} else {
+							size += netvar_arr_t<float>::size(elementCount);
+						}
+					}
+				}
+				case sizeof(short): {
+					prop.extra_data().type = FIELD_SHORT;
+
+					if(offset == -1) {
+						if(elementCount == 1) {
+							size += sizeof(netvar_t<short>);
+						} else {
+							size += netvar_arr_t<short>::size(elementCount);
+						}
+					}
+				}
+				case sizeof(int): {
+					prop.extra_data().type = FIELD_INTEGER;
+
+					if(offset == -1) {
+						if(elementCount == 1) {
+							size += sizeof(netvar_t<int>);
+						} else {
+							size += netvar_arr_t<int>::size(elementCount);
+						}
+					}
+				}
+			}
 		}
 
-		prop.SetProxyFn(proxy);
+		setup_array(name, prop, elementCount, sizeofVar);
 
-		if(nBits <= 0) {
-			nBits = sizeofVar * 8;
-		}
-
-		prop.m_nBits = nBits;
-
-		prop.m_Type = DPT_Int;
-
-		if(offset == -1) {
-			size += sizeofVar;
-		}
+		return prop;
 	}
 
-	void add_prop_ehandle(std::string &&name, int sizeofVar, int flags, int offset)
+	void add_prop_ehandle(const std::string &name, int flags, int elementCount, int offset)
 	{
-		add_prop_int(std::move(name), sizeofVar, NUM_NETWORKED_EHANDLE_BITS, SPROP_UNSIGNED|flags, offset, SendProxy_EHandleToInt);
+		add_prop_int(name, sizeof(EHANDLE), NUM_NETWORKED_EHANDLE_BITS, SPROP_UNSIGNED|flags, SendProxy_EHandleToInt, elementCount, offset);
 	}
 
-	void add_prop_int(std::string &&name, int sizeofVar, int nBits, int flags, int offset)
+	void add_prop_int(const std::string &name, int sizeofVar, int nBits, int flags, int elementCount, int offset)
 	{
 		SendVarProxyFn proxy{nullptr};
 
 		switch(sizeofVar) {
-			case 1: {
+			case sizeof(bool): {
 				proxy = ((flags & SPROP_UNSIGNED) ? std_proxies->m_UInt8ToInt32 : std_proxies->m_Int8ToInt32);
 			}
-			case 2: {
+			case sizeof(short): {
 				proxy = ((flags & SPROP_UNSIGNED) ? std_proxies->m_UInt16ToInt32 : std_proxies->m_Int16ToInt32);
 			}
-			case 4: {
+			case sizeof(int): {
 				proxy = ((flags & SPROP_UNSIGNED) ? std_proxies->m_UInt32ToInt32 : std_proxies->m_Int32ToInt32);
 			}
 		}
 
-		add_prop_int(std::move(name), sizeofVar, nBits, flags, offset, proxy);
+		add_prop_int(name, sizeofVar, nBits, flags, proxy, elementCount, offset);
 	}
 
 	IEntityFactory *hooked_fac = nullptr;
 	bool fac_is_sp = false;
 	custom_ServerClass cls{};
 	custom_SendTable tbl{};
-	std::vector<SendProp> props{};
+	std::vector<custom_SendProp> props{};
 	ServerClass *realcls = nullptr;
 	ServerClass *fakecls = nullptr;
 	std::string clsname{};
@@ -1761,7 +2331,16 @@ public:
 			}
 		}
 	}
-	size_t GetEntitySize() { return size; }
+	size_t GetEntitySize() {
+		size_t realsiz = size;
+		if(custom_prop) {
+			realsiz += custom_prop->size;
+		}
+		if(custom_server) {
+			realsiz += custom_server->size;
+		}
+		return realsiz;
+	}
 	
 	std::string name{};
 	IEntityFactory *based = nullptr;
@@ -2052,9 +2631,9 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	
 	counterid = classoverridecounter++;
 	
-	SendProp *prop = emplace_prop();
+	custom_SendProp *prop = emplace_prop();
 	prop->m_Type = DPT_DataTable;
-	prop->m_pVarName = "baseclass";
+	prop->set_name("baseclass"s);
 	prop->SetOffset(0);
 	prop->SetDataTableProxyFn(SendProxy_DataTableToDataTable);
 	prop->SetFlags(SPROP_PROXY_ALWAYS_YES|SPROP_COLLAPSIBLE);
@@ -2135,7 +2714,14 @@ serverclass_override_t::~serverclass_override_t()
 	if(!fac_is_sp && hooked_fac) {
 		factory_removed(hooked_fac);
 	}
-	
+
+	for(custom_SendProp &prop : props) {
+		prop.clear_name();
+	}
+
+	tbl.clear_name();
+	cls.clear_name();
+
 	if(freehndl) {
 		if(hndl != BAD_HANDLE) {
 			HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
@@ -2208,7 +2794,9 @@ custom_prop_info_t::~custom_prop_info_t()
 	for(custom_typedescription_t &desc : dataDesc) {
 		desc.clear_name();
 	}
-	
+
+	map.clear_name();
+
 	if(freehndl) {
 		if(hndl != BAD_HANDLE) {
 			HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
@@ -2228,6 +2816,8 @@ void serverclass_override_t::do_override(int &base, CBaseEntity *pEntity, IServe
 		update_offsets(base);
 		was_overriden = true;
 	}
+
+	zero(pEntity);
 
 	add_hooks(pEntity, pNet);
 }
@@ -2319,7 +2909,7 @@ IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
 		curr_data_info = nullptr;
 		curr_server_info = nullptr;
 		CBaseEntity *pEntity = net->GetBaseEntity();
-		last_cb = based->GetEntitySize();
+		//last_cb = based->GetEntitySize();
 		if(custom_prop) {
 			custom_prop->do_override(last_cb, pEntity);
 		}
@@ -2369,7 +2959,9 @@ IServerNetworkable *custom_prop_info_t::HookCreate(const char *classname)
 	
 	CBaseEntity *pEntity = net->GetBaseEntity();
 	
-	int base = fac->GetEntitySize();
+	//int base = fac->GetEntitySize();
+	int base = last_cb;
+
 	do_override(base, pEntity);
 	
 	RETURN_META_VALUE(MRES_SUPERCEDE, net);
@@ -2385,7 +2977,9 @@ IServerNetworkable *serverclass_override_t::HookCreate(const char *classname)
 	
 	CBaseEntity *pEntity = net->GetBaseEntity();
 	
-	int base = fac->GetEntitySize();
+	//int base = fac->GetEntitySize();
+	int base = last_cb;
+
 	do_override(base, pEntity, net);
 	
 	RETURN_META_VALUE(MRES_SUPERCEDE, net);
@@ -2423,6 +3017,7 @@ cell_t EntityFactoryDictionaryremove(IPluginContext *pContext, const cell_t *par
 
 static ServerClass *CTFPlayer_ServerClass{nullptr};
 static ServerClass *CDynamicProp_ServerClass{nullptr};
+static ServerClass *CWeaponMedigun_ServerClass{nullptr};
 
 static bool is_player_classname(const char *classname)
 {
@@ -2437,6 +3032,11 @@ static bool is_prop_classname(const char *classname)
 			strcmp(classname, "prop_dynamic_override") == 0);
 }
 
+static bool is_medgun_classname(const char *classname)
+{
+	return (strcmp(classname, "tf_weapon_medigun") == 0);
+}
+
 static ServerClass *get_factory_serverclass(IEntityFactory *factory, const char *classname)
 {
 	if(classname) {
@@ -2444,6 +3044,8 @@ static ServerClass *get_factory_serverclass(IEntityFactory *factory, const char 
 			return CTFPlayer_ServerClass;
 		} else if(is_prop_classname(classname)) {
 			return CDynamicProp_ServerClass;
+		} else if(is_medgun_classname(classname)) {
+			return CWeaponMedigun_ServerClass;
 		}
 	}
 	ignore_entity_listeners = true;
@@ -2555,6 +3157,54 @@ cell_t CustomDatamapadd_prop(IPluginContext *pContext, const cell_t *params)
 	return 0;
 }
 
+cell_t CustomSendtableadd_prop_vector(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	serverclass_override_t *obj = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&obj);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	char *name_ptr = nullptr;
+	pContext->LocalToString(params[2], &name_ptr);
+
+	int elementCount = params[7];
+	if(elementCount == 0) {
+		return pContext->ThrowNativeError("cannot have 0 elements");
+	}
+
+	std::string name{name_ptr};
+	obj->add_prop_vector(name, sp_ctof(params[3]), sp_ctof(params[4]), params[5], params[6], elementCount, params[8]);
+	return 0;
+}
+
+cell_t CustomSendtableadd_prop_qangles(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	serverclass_override_t *obj = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&obj);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	char *name_ptr = nullptr;
+	pContext->LocalToString(params[2], &name_ptr);
+
+	int elementCount = params[5];
+	if(elementCount == 0) {
+		return pContext->ThrowNativeError("cannot have 0 elements");
+	}
+
+	std::string name{name_ptr};
+	obj->add_prop_qangles(name, params[3], params[4], elementCount, params[6]);
+	return 0;
+}
+
 cell_t CustomSendtableadd_prop_float(IPluginContext *pContext, const cell_t *params)
 {
 	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
@@ -2568,9 +3218,14 @@ cell_t CustomSendtableadd_prop_float(IPluginContext *pContext, const cell_t *par
 	
 	char *name_ptr = nullptr;
 	pContext->LocalToString(params[2], &name_ptr);
-	
+
+	int elementCount = params[7];
+	if(elementCount == 0) {
+		return pContext->ThrowNativeError("cannot have 0 elements");
+	}
+
 	std::string name{name_ptr};
-	obj->add_prop_float(std::move(name), sp_ctof(params[3]), sp_ctof(params[4]), params[5], params[6]);
+	obj->add_prop_float(name, sp_ctof(params[3]), sp_ctof(params[4]), params[5], params[6], elementCount, params[8]);
 	return 0;
 }
 
@@ -2587,9 +3242,14 @@ cell_t CustomSendtableadd_prop_int(IPluginContext *pContext, const cell_t *param
 	
 	char *name_ptr = nullptr;
 	pContext->LocalToString(params[2], &name_ptr);
-	
+
+	int elementCount = params[6];
+	if(elementCount == 0) {
+		return pContext->ThrowNativeError("cannot have 0 elements");
+	}
+
 	std::string name{name_ptr};
-	obj->add_prop_int(std::move(name), params[3], params[4], params[5], params[6]);
+	obj->add_prop_int(name, params[3], params[4], params[5], elementCount, params[7]);
 	return 0;
 }
 
@@ -2606,9 +3266,14 @@ cell_t CustomSendtableadd_prop_ehandle(IPluginContext *pContext, const cell_t *p
 	
 	char *name_ptr = nullptr;
 	pContext->LocalToString(params[2], &name_ptr);
-	
+
+	int elementCount = params[4];
+	if(elementCount == 0) {
+		return pContext->ThrowNativeError("cannot have 0 elements");
+	}
+
 	std::string name{name_ptr};
-	obj->add_prop_ehandle(std::move(name), params[3], params[4], params[5]);
+	obj->add_prop_ehandle(name, params[3], elementCount, params[5]);
 	return 0;
 }
 
@@ -3091,6 +3756,17 @@ static cell_t native_AllocPooledString(IPluginContext *pContext, const cell_t *p
 	return *reinterpret_cast<cell_t *>(&id);
 }
 
+static cell_t RemoveEntityImmediate(IPluginContext *pContext, const cell_t *params)
+{
+	CBaseEntity *pEntity = gamehelpers->ReferenceToEntity(params[1]);
+	if(!pEntity) {
+		return pContext->ThrowNativeError("Invalid Entity Reference/Index %i", params[1]);
+	}
+
+	servertools->RemoveEntityImmediate(pEntity);
+	return 0;
+}
+
 sp_nativeinfo_t natives[] =
 {
 	{"IEntityFactory.Custom.get", IEntityFactoryCustomget},
@@ -3111,6 +3787,8 @@ sp_nativeinfo_t natives[] =
 	{"CustomSendtable.add_prop_float", CustomSendtableadd_prop_float},
 	{"CustomSendtable.add_prop_int", CustomSendtableadd_prop_int},
 	{"CustomSendtable.add_prop_ehandle", CustomSendtableadd_prop_ehandle},
+	{"CustomSendtable.add_prop_vector", CustomSendtableadd_prop_vector},
+	{"CustomSendtable.add_prop_qangles", CustomSendtableadd_prop_qangles},
 	{"CustomDatamap.from_classname", CustomDatamapfrom_classname},
 	{"CustomDatamap.from_factory", CustomDatamapfrom_factory},
 	{"CustomDatamap.add_prop", CustomDatamapadd_prop},
@@ -3119,6 +3797,7 @@ sp_nativeinfo_t natives[] =
 	{"HookEntityThink", SetEntityThink},
 	{"SetEntityNextThink", SetEntityNextThink},
 	{"AllocPooledString", native_AllocPooledString},
+	{"RemoveEntityImmediate", RemoveEntityImmediate},
 	{NULL, NULL}
 };
 
@@ -3255,6 +3934,8 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 			CTFPlayer_ServerClass = g_pServerClassTail;
 		} else if(strcmp(g_pServerClassTail->m_pNetworkName, "CDynamicProp") == 0) {
 			CDynamicProp_ServerClass = g_pServerClassTail;
+		} else if(strcmp(g_pServerClassTail->m_pNetworkName, "CWeaponMedigun") == 0) {
+			CWeaponMedigun_ServerClass = g_pServerClassTail;
 		}
 		
 		if(!g_pServerClassTail->m_pNext) {
@@ -3344,7 +4025,7 @@ DETOUR_DECL_STATIC0(SV_CreateBaseline, void)
 {
 	DETOUR_STATIC_CALL(SV_CreateBaseline)();
 
-	if(sv_sendtables->GetInt() == 0) {
+	if(sv_sendtables->GetInt() == 0 && (sv_sendclasses.GetBool() || sv_sendcustomtables.GetBool())) {
 		m_FullSendTablesBuffer.EnsureCapacity( NET_MAX_PAYLOAD );
 		m_FullSendTables.StartWriting( m_FullSendTablesBuffer.Base(), m_FullSendTablesBuffer.Count() );
 
@@ -3398,7 +4079,7 @@ DETOUR_DECL_MEMBER0(DetourCGameClientSendSignonData, bool)
 {
 	CGameClient *pThis = (CGameClient *)this;
 
-	if(sv_sendtables->GetInt() == 0) {
+	if(sv_sendtables->GetInt() == 0 && (sv_sendclasses.GetBool() || sv_sendcustomtables.GetBool())) {
 		if ( m_FullSendTables.IsOverflowed() )
 		{
 			Host_Error( "Send Table signon buffer overflowed %i bytes!!!\n", m_FullSendTables.GetNumBytesWritten() );
