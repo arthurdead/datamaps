@@ -1768,6 +1768,58 @@ CUtlVector<SendTable *> *g_SendTables{nullptr};
 
 CRC32_t SendTable_ComputeCRC();
 
+template <typename T>
+using netvar_t = CNetworkVarBase<T, NetworkVar_Generic>;
+
+template <typename T>
+using netvar_vec_t = CNetworkVectorBase<T, NetworkVar_Generic>;
+
+template <typename T>
+using netvar_ehndl_t = CNetworkHandleBase<T, NetworkVar_Generic>;
+
+template <typename T>
+using netvar_arr_t = NetworkVar_ArrayUnknownSize<T>;
+
+template <typename T>
+int get_var_size(int elementCount)
+{
+	if(elementCount == 1) {
+		return sizeof(netvar_t<T>);
+	} else {
+		return netvar_arr_t<T>::size(elementCount);
+	}
+}
+
+template <>
+int get_var_size<EHANDLE>(int elementCount)
+{
+	if(elementCount == 1) {
+		return sizeof(netvar_ehndl_t<EHANDLE>);
+	} else {
+		return netvar_arr_t<EHANDLE>::size(elementCount);
+	}
+}
+
+template <>
+int get_var_size<QAngle>(int elementCount)
+{
+	if(elementCount == 1) {
+		return sizeof(netvar_vec_t<QAngle>);
+	} else {
+		return netvar_arr_t<QAngle>::size(elementCount);
+	}
+}
+
+template <>
+int get_var_size<Vector>(int elementCount)
+{
+	if(elementCount == 1) {
+		return sizeof(netvar_vec_t<Vector>);
+	} else {
+		return netvar_arr_t<Vector>::size(elementCount);
+	}
+}
+
 struct serverclass_override_t : public hookobj_t
 {
 	serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_);
@@ -1829,18 +1881,6 @@ struct serverclass_override_t : public hookobj_t
 		tbl.m_pProps = (SendProp *)props.data();
 		tbl.m_nProps = props.size();
 	}
-
-	template <typename T>
-	using netvar_t = CNetworkVarBase<T, NetworkVar_Generic>;
-
-	template <typename T>
-	using netvar_vec_t = CNetworkVectorBase<T, NetworkVar_Generic>;
-
-	template <typename T>
-	using netvar_ehndl_t = CNetworkHandleBase<T, NetworkVar_Generic>;
-
-	template <typename T>
-	using netvar_arr_t = NetworkVar_ArrayUnknownSize<T>;
 
 	void dtor(CBaseEntity *pEntity)
 	{
@@ -1991,46 +2031,6 @@ struct serverclass_override_t : public hookobj_t
 		custom_SendProp *prop = &props.emplace_back();
 		update_props();
 		return prop;
-	}
-
-	template <typename T>
-	int get_var_size(int elementCount)
-	{
-		if(elementCount == 1) {
-			return sizeof(netvar_t<T>);
-		} else {
-			return netvar_arr_t<T>::size(elementCount);
-		}
-	}
-
-	template <>
-	int get_var_size<EHANDLE>(int elementCount)
-	{
-		if(elementCount == 1) {
-			return sizeof(netvar_ehndl_t<EHANDLE>);
-		} else {
-			return netvar_arr_t<EHANDLE>::size(elementCount);
-		}
-	}
-
-	template <>
-	int get_var_size<QAngle>(int elementCount)
-	{
-		if(elementCount == 1) {
-			return sizeof(netvar_vec_t<QAngle>);
-		} else {
-			return netvar_arr_t<QAngle>::size(elementCount);
-		}
-	}
-
-	template <>
-	int get_var_size<Vector>(int elementCount)
-	{
-		if(elementCount == 1) {
-			return sizeof(netvar_vec_t<Vector>);
-		} else {
-			return netvar_arr_t<Vector>::size(elementCount);
-		}
 	}
 
 	#define PROP_OFFSET_EXISTING -1
