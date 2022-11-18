@@ -65,32 +65,42 @@ enum custom_prop_type
 
 #define HIGH_DEFAULT -121121.121121
 
-#define SPROP_UNSIGNED (1 << 0)
-#define SPROP_COORD    (1 << 1)
-#define SPROP_NOSCALE  (1 << 2)
-#define SPROP_NORMAL   (1 << 5)
-#define SPROP_COORD_MP (1 << 13)
-#define SPROP_VARINT   SPROP_NORMAL
+#define SPROP_UNSIGNED  (1 << 0)
+#define SPROP_COORD     (1 << 1)
+#define SPROP_NOSCALE   (1 << 2)
+#define SPROP_NORMAL    (1 << 5)
+#define SPROP_ROUNDDOWN (1 << 3)
+#define SPROP_COORD_MP  (1 << 13)
+#define SPROP_VARINT    SPROP_NORMAL
+
+#define PROP_OFFSET_EXISTING -1
+#define PROP_OFFSET_NEW -2
 
 methodmap CustomSendtable < Handle
 {
 	public static native CustomSendtable from_classname(const char[] classname, const char[] forced = NULL_STRING);
 	public static native CustomSendtable from_factory(CustomEntityFactory fac, const char[] forced = NULL_STRING);
 
-	public native void override_with(const char[] netname);
 	public native void unexclude_prop(const char[] dtname, const char[] name);
 	public native void set_base_class(const char[] netname);
 
 	public native void set_name(const char[] name);
-	public native void set_network_name(const char[] name);
+	public native void set_class_name(const char[] name);
 
-	public native void add_prop_float(const char[] name, float low_value = 0.0, float high_value = HIGH_DEFAULT, int bits = 32, int flags = 0, int elements = 1, int offset = -1);
+	public native void set_client_name(const char[] name);
+	public native void set_client_class_id(const char[] name);
+	public native void set_client_class_name(const char[] name);
 
-	public native void add_prop_vector(const char[] name, float low_value = 0.0, float high_value = HIGH_DEFAULT, int bits = 32, int flags = SPROP_NOSCALE, int elements = 1, int offset = -1);
-	public native void add_prop_qangles(const char[] name, int bits = 32, int flags = 0, int elements = 1, int offset = -1);
+	public native void add_prop_float(const char[] name, float low_value = 0.0, float high_value = HIGH_DEFAULT, int bits = 32, int flags = 0, int elements = 1, int offset = PROP_OFFSET_EXISTING);
 
-	public native void add_prop_int(const char[] name, int size, int bits = -1, int flags = 0, int elements = 1, int offset = -1);
-	public native void add_prop_ehandle(const char[] name, int flags = 0, int elements = 1, int offset = -1);
+	public native void add_prop_vector(const char[] name, float low_value = 0.0, float high_value = HIGH_DEFAULT, int bits = 32, int flags = SPROP_NOSCALE, int elements = 1, int offset = PROP_OFFSET_EXISTING);
+	public native void add_prop_qangles(const char[] name, int bits = 32, int flags = 0, int elements = 1, int offset = PROP_OFFSET_EXISTING);
+
+	public native void add_prop_int(const char[] name, int size, int bits = -1, int flags = 0, int elements = 1, int offset = PROP_OFFSET_EXISTING);
+	public void add_prop_bool(const char[] name, int flags = 0, int elements = 1, int offset = PROP_OFFSET_EXISTING)
+	{ this.add_prop_int(name, 1, 1, SPROP_UNSIGNED|flags, elements, offset); }
+
+	public native void add_prop_ehandle(const char[] name, int flags = 0, int elements = 1, int offset = PROP_OFFSET_EXISTING);
 };
 
 methodmap CustomDatamap < Handle

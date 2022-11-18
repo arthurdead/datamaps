@@ -58,7 +58,20 @@ public:
 	bool is_allowed() const noexcept override final;
 #endif
 
+	void pre_write_deltas() const noexcept
+	#ifdef __HAS_PROXYSEND
+		override final
+	#endif
+		;
+
+	void post_write_deltas() const noexcept
+	#ifdef __HAS_PROXYSEND
+		override final
+	#endif
+		;
+
 	virtual void OnCoreMapStart(edict_t *pEdictList, int edictCount, int clientMax);
+	virtual void OnCoreMapEnd();
 
 	virtual void OnHandleDestroy(HandleType_t type, void *object);
 	

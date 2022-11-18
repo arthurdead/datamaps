@@ -70,25 +70,60 @@
 				"library" "engine"
 				"linux" "@_ZN11CGameClient14SendSignonDataEv"
 			}
-			"SVC_ClassInfo::WriteToBuffer"
+			"SV_WriteSendTables"
 			{
 				"library" "engine"
-				"linux" "@_ZN13SVC_ClassInfo13WriteToBufferER8bf_write"
+				"linux" "@_Z18SV_WriteSendTablesP11ServerClassR8bf_write"
+			}
+			"SV_ComputeClassInfosCRC"
+			{
+				"library" "engine"
+				"linux" "@_Z23SV_ComputeClassInfosCRCPj"
+			}
+			"SV_MaybeWriteSendTable"
+			{
+				"library" "engine"
+				"linux" "@_Z22SV_MaybeWriteSendTableP9SendTableR8bf_writeb"
+			}
+			"SendTable_WriteInfos"
+			{
+				"library" "engine"
+				"linux" "@_Z20SendTable_WriteInfosP9SendTableP8bf_write"
+			}
+			"ServerDTI_HookTable"
+			{
+				"library" "engine"
+				"linux" "@_Z19ServerDTI_HookTableP9SendTable"
+			}
+			"CSendTablePrecalc::CSendTablePrecalc"
+			{
+				"library" "engine"
+				"linux" "@_ZN17CSendTablePrecalcC1Ev"
 			}
 			"SV_CreateBaseline"
 			{
 				"library" "engine"
 				"linux" "@_Z17SV_CreateBaselinev"
 			}
-			"SV_WriteSendTables"
+			"g_SendTables"
 			{
 				"library" "engine"
-				"linux" "@_Z18SV_WriteSendTablesP11ServerClassR8bf_write"
+				"linux" "@g_SendTables"
 			}
-			"SV_WriteClassInfos"
+			"g_DTISendTables"
 			{
 				"library" "engine"
-				"linux" "@_Z18SV_WriteClassInfosP11ServerClassR8bf_write"
+				"linux" "@g_DTISendTables"
+			}
+			"SV_EnsureInstanceBaseline"
+			{
+				"library" "engine"
+				"linux" "@_Z25SV_EnsureInstanceBaselineP11ServerClassiPKvi"
+			}
+			"SendTable_Encode"
+			{
+				"library" "engine"
+				"linux" "@_Z16SendTable_EncodePK9SendTablePKvP8bf_writeiP10CUtlMemoryI20CSendProxyRecipientsiEb"
 			}
 		}
 	}
@@ -104,6 +139,11 @@
 	}
 	"tf"
 	{
+		"Keys"
+		{
+			"CONDTABLE_NAME" "_ST_m_ConditionData_130"
+			"CONDTABLE_LIMIT" "120"
+		}
 		"Offsets"
 		{
 			"CBaseEntity::PostConstructor"

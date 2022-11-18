@@ -185,6 +185,7 @@ ISDKHooks *g_pSDKHooks = nullptr;
 ISDKTools *g_pSDKTools = nullptr;
 IServerTools *servertools = nullptr;
 ServerClass *g_pServerClassHead = nullptr;
+int g_iNumServerClasses = 0;
 ServerClass *g_pServerClassTail = nullptr;
 INetworkStringTableContainer *netstringtables = NULL;
 INetworkStringTable *m_pInstanceBaselineTable = nullptr;
@@ -695,12 +696,12 @@ void SetEdictStateChanged(CBaseEntity *pEntity, int offset)
 	gamehelpers->SetEdictStateChanged(edict, offset);
 }
 
-CBaseEntity *FindEntityByClassname(CBaseEntity *pEntity, const std::string &name)
+CBaseEntity *FindEntityByClassname(CBaseEntity *pEntity, const char *name)
 {
 #if SOURCE_ENGINE == SE_TF2
-	return servertools->FindEntityByClassname(pEntity, name.c_str());
+	return servertools->FindEntityByClassname(pEntity, name);
 #elif SOURCE_ENGINE == SE_LEFT4DEAD2
-	return call_mfunc<CBaseEntity *, CBaseEntityList, CBaseEntity *, const char *>(g_pEntityList, CGlobalEntityListFindEntityByClassname, pEntity, name.c_str());
+	return call_mfunc<CBaseEntity *, CBaseEntityList, CBaseEntity *, const char *>(g_pEntityList, CGlobalEntityListFindEntityByClassname, pEntity, name);
 #endif
 }
 
@@ -713,7 +714,7 @@ void RemoveEntity(CBaseEntity *pEntity)
 #endif
 }
 
-void remove_all_entities(const std::string &name)
+void remove_all_entities(const char *name)
 {
 	CBaseEntity *pEntity = nullptr;
 	while((pEntity = FindEntityByClassname(pEntity, name)) != nullptr) {
@@ -722,7 +723,7 @@ void remove_all_entities(const std::string &name)
 }
 
 template <typename T>
-void loop_all_entities(T func, const std::string &name)
+void loop_all_entities(T func, const char *name)
 {
 	CBaseEntity *pEntity = nullptr;
 	while((pEntity = FindEntityByClassname(pEntity, name)) != nullptr) {
@@ -750,10 +751,10 @@ public:
 		return nullptr;
 	}
 	
-	IEntityFactory *get_name_factory(const std::string &name)
+	IEntityFactory *get_name_factory(const char *name)
 	{
 		for(int i = 0; i < m_Factories.Count(); i++) {
-			if(m_Factories.GetElementName(i) == name) {
+			if(strcmp(m_Factories.GetElementName(i), name) == 0) {
 				return m_Factories[i];
 			}
 		}
@@ -764,7 +765,7 @@ public:
 	
 	void remove_factory(const std::string &name)
 	{
-		remove_factory(get_name_factory(name), name);
+		remove_factory(get_name_factory(name.c_str()), name);
 	}
 	
 	void remove_factory(IEntityFactory *fac)
@@ -843,6 +844,12 @@ struct custom_typedescription_t : typedescription_t
 	~custom_typedescription_t()
 	{
 		clear_name();
+
+		get_offset() = 0;
+		fieldType = FIELD_VOID;
+		fieldSize = 0;
+		flags = 0;
+		fieldSizeInBytes = 0;
 	}
 	
 	void zero()
@@ -902,6 +909,10 @@ struct custom_datamap_t : datamap_t
 	~custom_datamap_t()
 	{
 		clear_name();
+
+		dataDesc = nullptr;
+		dataNumFields = 0;
+		baseMap = nullptr;
 	}
 	
 	void zero()
@@ -1034,6 +1045,7 @@ public:
 			if(pEntity) {
 				hooks_removed(pEntity, it.first);
 				hooks_removed_late(pEntity, it.first);
+				RemoveEntity(pEntity);
 			}
 		}
 
@@ -1078,7 +1090,6 @@ struct custom_prop_info_t : public hookobj_t
 	std::string clsname{};
 	Handle_t hndl = BAD_HANDLE;
 	IPluginContext *pContext = nullptr;
-	bool erase = true;
 	bool freehndl = true;
 	size_t counterid = 0;
 	std::string mapname{};
@@ -1232,10 +1243,10 @@ struct custom_prop_info_t : public hookobj_t
 		base += size;
 	}
 	
-	bool has_prop(const std::string &name)
+	bool has_prop(const char *name)
 	{
 		for(custom_typedescription_t &desc : dataDesc) {
-			if(desc.fieldName == name) {
+			if(strcmp(desc.fieldName, name) == 0) {
 				return true;
 			}
 		}
@@ -1243,13 +1254,13 @@ struct custom_prop_info_t : public hookobj_t
 		return false;
 	}
 	
-	void remove_prop(const std::string &name)
+	void remove_prop(const char *name)
 	{
 		bool removed = false;
 		
 		dataDesc_t::iterator it{dataDesc.begin()};
 		while(it != dataDesc.end()) {
-			if(it->fieldName == name) {
+			if(strcmp(it->fieldName, name) == 0) {
 				it->clear_name();
 				dataDesc.erase(it);
 				removed = true;
@@ -1264,7 +1275,7 @@ struct custom_prop_info_t : public hookobj_t
 		}
 	}
 	
-	void add_prop(const std::string &name, fieldtype_t type, int num = 1, int flags = 0)
+	void add_prop(const char *name, fieldtype_t type, int num = 1, int flags = 0)
 	{
 		dataDesc.emplace_back();
 		custom_typedescription_t &desc = dataDesc.back();
@@ -1389,7 +1400,12 @@ public:
 	~custom_ServerClass()
 	{
 		clear_name();
+
+		m_pTable = nullptr;
+		m_pNext = nullptr;
 	}
+
+	const char*	GetName() { return m_pNetworkName; }
 	
 	const char					*m_pNetworkName;
 	SendTable					*m_pTable;
@@ -1583,6 +1599,9 @@ public:
 	~custom_SendTable()
 	{
 		clear_name();
+
+		m_pProps = nullptr;
+		m_nProps = 0;
 	}
 };
 
@@ -1620,6 +1639,7 @@ public:
 		bool absoffset = false;
 		fieldtype_t type = FIELD_VOID;
 		int elementCount = 1;
+		int var_size = 0;
 	};
 
 	custom_SendProp(const custom_SendProp &) = delete;
@@ -1671,6 +1691,20 @@ public:
 		clear_name();
 
 		delete (extra_data_t *)GetExtraData();
+
+		m_Type = DPT_DataTable;
+		m_nBits = 0;
+		m_pArrayProp = nullptr;
+		m_ArrayLengthProxy = nullptr;
+		m_nElements = 0;
+		m_ElementStride = 0;
+
+		SetFlags(0);
+		SetOffset(0);
+		SetProxyFn(nullptr);
+		SetDataTableProxyFn(nullptr);
+		SetDataTable(nullptr);
+		SetExtraData(nullptr);
 	}
 
 	extra_data_t &extra_data()
@@ -1743,6 +1777,13 @@ protected:
 	{ return (T *)this; }
 };
 
+#include <tier1/checksum_crc.h>
+
+CRC32_t *g_SendTableCRC{nullptr};
+CUtlVector<SendTable *> *g_SendTables{nullptr};
+
+CRC32_t SendTable_ComputeCRC();
+
 struct serverclass_override_t : public hookobj_t
 {
 	serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_);
@@ -1783,9 +1824,10 @@ struct serverclass_override_t : public hookobj_t
 		svcls_hooks.emplace_back(gamehelpers->EntityToReference(pEntity));
 	}
 
-	void do_override(int &base, CBaseEntity *pEntity, IServerNetworkable *pNet);
+	void setup_datatable();
+	void term_datatable();
 
-	void remove_base_line();
+	void do_override(int &base, CBaseEntity *pEntity, IServerNetworkable *pNet);
 
 	void override_with(ServerClass *netclass);
 	void set_base_class(SendTable *table);
@@ -1793,14 +1835,9 @@ struct serverclass_override_t : public hookobj_t
 	
 	void init();
 
-	custom_SendProp *emplace_prop()
-	{
-		custom_SendProp *prop = &props.emplace_back();
-		update_dt();
-		return prop;
-	}
+	void init_classid();
 
-	void update_dt()
+	void update_props()
 	{
 		tbl.m_pProps = (SendProp *)props.data();
 		tbl.m_nProps = props.size();
@@ -1822,9 +1859,6 @@ struct serverclass_override_t : public hookobj_t
 	{
 		for(std::size_t i{1}; i < props.size(); ++i) {
 			custom_SendProp &prop{props[i]};
-			if(prop.extra_data().absoffset) {
-				continue;
-			}
 			int offset = prop.GetOffset();
 			custom_SendProp::extra_data_t &data{prop.extra_data()};
 			unsigned char *ptr = (((unsigned char *)pEntity) + offset);
@@ -1895,9 +1929,6 @@ struct serverclass_override_t : public hookobj_t
 	{
 		for(std::size_t i{1}; i < props.size(); ++i) {
 			custom_SendProp &prop{props[i]};
-			if(prop.extra_data().absoffset) {
-				continue;
-			}
 			int offset = prop.GetOffset();
 			custom_SendProp::extra_data_t &data{prop.extra_data()};
 			unsigned char *ptr = (((unsigned char *)pEntity) + offset);
@@ -1964,28 +1995,132 @@ struct serverclass_override_t : public hookobj_t
 		}
 	}
 
-	void update_offsets(int &base)
+	void calc_size(int &base);
+
+	void update_offsets(int &base);
+
+	custom_SendProp *emplace_prop()
 	{
-		for(std::size_t i{1}; i < props.size(); ++i) {
-			custom_SendProp &prop{props[i]};
-			if(prop.GetType() == DPT_Array) {
-				custom_SendProp &child{props[i-1]};
-				child.SetInsideArray();
-				prop.SetArrayProp(&child);
-				continue;
-			}
-			if(!prop.extra_data().absoffset) {
-				prop.SetOffset(base + prop.GetOffset());
+		custom_SendProp *prop = &props.emplace_back();
+		update_props();
+		return prop;
+	}
+
+	template <typename T>
+	int get_var_size(int elementCount)
+	{
+		if(elementCount == 1) {
+			return sizeof(netvar_t<T>);
+		} else {
+			return netvar_arr_t<T>::size(elementCount);
+		}
+	}
+
+	template <>
+	int get_var_size<EHANDLE>(int elementCount)
+	{
+		if(elementCount == 1) {
+			return sizeof(netvar_ehndl_t<EHANDLE>);
+		} else {
+			return netvar_arr_t<EHANDLE>::size(elementCount);
+		}
+	}
+
+	template <>
+	int get_var_size<QAngle>(int elementCount)
+	{
+		if(elementCount == 1) {
+			return sizeof(netvar_vec_t<QAngle>);
+		} else {
+			return netvar_arr_t<QAngle>::size(elementCount);
+		}
+	}
+
+	template <>
+	int get_var_size<Vector>(int elementCount)
+	{
+		if(elementCount == 1) {
+			return sizeof(netvar_vec_t<Vector>);
+		} else {
+			return netvar_arr_t<Vector>::size(elementCount);
+		}
+	}
+
+	#define PROP_OFFSET_EXISTING -1
+	#define PROP_OFFSET_NEW -2
+
+	int get_prop_offset(const char *cls, const char *name)
+	{
+		sm_sendprop_info_t info{};
+		if(gamehelpers->FindSendPropInfo(cls, name, &info)) {
+			if(info.prop->GetType() == DPT_Array) {
+				return info.prop->GetArrayProp()->GetOffset();
+			} else {
+				return info.actual_offset;
 			}
 		}
-		base += size;
+		return -1;
+	}
+
+	int get_prop_offset(const char *name)
+	{
+		int offset = -1;
+		if(classid_cls) {
+			offset = get_prop_offset(classid_cls->m_pNetworkName, name);
+			if(offset != -1) {
+				return offset;
+			}
+		}
+		if(!cls_cl_name.empty()) {
+			offset = get_prop_offset(cls_cl_name.c_str(), name);
+			if(offset != -1) {
+				return offset;
+			}
+		}
+		if(realcls) {
+			offset = get_prop_offset(realcls->m_pNetworkName, name);
+			if(offset != -1) {
+				return offset;
+			}
+		}
+		return -1;
+	}
+
+	template <typename T>
+	custom_SendProp *emplace_prop(const std::string &name, int offset, int elementCount)
+	{
+		custom_SendProp *prop = &props.emplace_back();
+		update_props();
+		prop->set_name(name);
+		int var_size{get_var_size<T>(elementCount)};
+		custom_SendProp::extra_data_t &data{prop->extra_data()};
+		if(offset == PROP_OFFSET_EXISTING) {
+			offset = get_prop_offset(name.c_str());
+			if(offset == -1) {
+				offset = PROP_OFFSET_NEW;
+			}
+		}
+		if(offset >= 0) {
+			prop->SetOffset(offset);
+			data.absoffset = true;
+			int final_offset{offset + var_size};
+			if(final_offset > largest_offset) {
+				largest_offset = final_offset;
+			}
+		} else if(offset == PROP_OFFSET_NEW) {
+			prop->SetOffset(size);
+			size += var_size;
+		}
+		data.var_size = var_size;
+		data.elementCount = elementCount;
+		return prop;
 	}
 
 	custom_SendProp &add_prop_array(const std::string &name, int elementCount, int elementStride)
 	{
 		custom_SendProp &prop{*emplace_prop()};
 
-		prop.set_name(std::move(name));
+		prop.set_name(name);
 
 		prop.SetProxyFn(SendProxy_Empty);
 
@@ -2006,12 +2141,7 @@ struct serverclass_override_t : public hookobj_t
 			return;
 		}
 
-		prop.extra_data().elementCount = elementCount;
-
-		prop.SetInsideArray();
-
-		custom_SendProp &arr{add_prop_array(name, elementCount, elementStride)};
-		arr.SetArrayProp(&prop);
+		add_prop_array(name, elementCount, elementStride);
 	}
 
 	void add_prop_qangles(const std::string &name, int nBits, int flags, int elementCount, int offset)
@@ -2020,15 +2150,9 @@ struct serverclass_override_t : public hookobj_t
 			flags |= SPROP_NOSCALE;
 		}
 
-		custom_SendProp &prop{*emplace_prop()};
-
-		prop.set_name(name);
+		custom_SendProp &prop{*emplace_prop<QAngle>(name, offset, elementCount)};
 
 		prop.SetFlags(flags);
-
-		if(offset != -1) {
-			prop.extra_data().absoffset = true;
-		}
 
 		prop.SetProxyFn(SendProxy_QAngles);
 
@@ -2039,23 +2163,11 @@ struct serverclass_override_t : public hookobj_t
 		prop.m_fHighLowMul = AssignRangeMultiplier(nBits, 360.0f);
 		prop.m_Type = DPT_Vector;
 
-		int sizeofVar = sizeof(QAngle);
-
-		if(offset == -1) {
-			prop.SetOffset(size);
-
-			if(elementCount == 1) {
-				size += sizeof(netvar_vec_t<QAngle>);
-			} else {
-				size += netvar_arr_t<QAngle>::size(elementCount);
-			}
-		} else {
-			prop.SetOffset(offset);
-		}
-
 		prop.extra_data().type = FIELD_VECTOR;
 
-		setup_array(name, prop, elementCount, sizeofVar);
+		int elementStride = sizeof(QAngle);
+
+		setup_array(name, prop, elementCount, elementStride);
 	}
 
 	void add_prop_vector(const std::string &name, float fLowValue, float fHighValue, int nBits, int flags, int elementCount, int offset)
@@ -2069,15 +2181,9 @@ struct serverclass_override_t : public hookobj_t
 			actual_bits = 0;
 		}
 
-		custom_SendProp &prop{*emplace_prop()};
-
-		prop.set_name(name);
+		custom_SendProp &prop{*emplace_prop<Vector>(name, offset, elementCount)};
 
 		prop.SetFlags(flags);
-
-		if(offset != -1) {
-			prop.extra_data().absoffset = true;
-		}
 
 		prop.SetProxyFn(std_proxies->m_VectorToVector);
 
@@ -2088,27 +2194,15 @@ struct serverclass_override_t : public hookobj_t
 		prop.m_fHighLowMul = AssignRangeMultiplier(nBits, fHighValue - fLowValue);
 		prop.m_Type = DPT_Vector;
 
-		int sizeofVar = sizeof(Vector);
-
-		if(offset == -1) {
-			prop.SetOffset(size);
-
-			if(elementCount == 1) {
-				size += sizeof(netvar_vec_t<Vector>);
-			} else {
-				size += netvar_arr_t<Vector>::size(elementCount);
-			}
-		} else {
-			prop.SetOffset(offset);
-		}
-
 		if(flags & (SPROP_COORD|SPROP_COORD_MP|SPROP_COORD_MP_LOWPRECISION|SPROP_COORD_MP_INTEGRAL)) {
 			prop.extra_data().type = FIELD_POSITION_VECTOR;
 		} else {
 			prop.extra_data().type = FIELD_VECTOR;
 		}
 
-		setup_array(name, prop, elementCount, sizeofVar);
+		int elementStride = sizeof(Vector);
+
+		setup_array(name, prop, elementCount, elementStride);
 	}
 
 	void add_prop_float(const std::string &name, float fLowValue, float fHighValue, int nBits, int flags, int elementCount, int offset)
@@ -2134,13 +2228,7 @@ struct serverclass_override_t : public hookobj_t
 			actual_bits = 0;
 		}
 
-		custom_SendProp &prop{*emplace_prop()};
-
-		prop.set_name(name);
-
-		if(offset != -1) {
-			prop.extra_data().absoffset = true;
-		}
+		custom_SendProp &prop{*emplace_prop<float>(name, offset, elementCount)};
 
 		prop.SetProxyFn(std_proxies->m_FloatToFloat);
 
@@ -2153,23 +2241,11 @@ struct serverclass_override_t : public hookobj_t
 		prop.m_fHighLowMul = AssignRangeMultiplier(nBits, fHighValue - fLowValue);
 		prop.m_Type = DPT_Float;
 
-		int sizeofVar = sizeof(float);
-
-		if(offset == -1) {
-			prop.SetOffset(size);
-
-			if(elementCount == 1) {
-				size += sizeof(netvar_t<float>);
-			} else {
-				size += netvar_arr_t<float>::size(elementCount);
-			}
-		} else {
-			prop.SetOffset(offset);
-		}
-
 		prop.extra_data().type = FIELD_FLOAT;
 
-		setup_array(name, prop, elementCount, sizeofVar);
+		int elementStride = sizeof(float);
+
+		setup_array(name, prop, elementCount, elementStride);
 	}
 
 	custom_SendProp &add_prop_int(const std::string &name, int sizeofVar, int nBits, int flags, SendVarProxyFn proxy, int elementCount, int offset)
@@ -2178,82 +2254,45 @@ struct serverclass_override_t : public hookobj_t
 			nBits = (sizeofVar * 8);
 		}
 
-		custom_SendProp &prop{*emplace_prop()};
-
-		prop.set_name(name);
-
-		prop.SetFlags(flags);
-
-		if(offset != -1) {
-			prop.extra_data().absoffset = true;
-		}
-
-		prop.SetProxyFn(proxy);
-
-		prop.m_nBits = nBits;
-
-		prop.m_Type = DPT_Int;
-
-		if(offset == -1) {
-			prop.SetOffset(size);
-		} else {
-			prop.SetOffset(offset);
-		}
+		custom_SendProp *prop{nullptr};
 
 		if(sizeofVar == sizeof(EHANDLE) &&
 			nBits == NUM_NETWORKED_EHANDLE_BITS &&
 			proxy == SendProxy_EHandleToInt &&
 			(flags & SPROP_UNSIGNED)) {
-			prop.extra_data().type = FIELD_EHANDLE;
+			prop = emplace_prop<EHANDLE>(name, offset, elementCount);
 
-			if(offset == -1) {
-				if(elementCount == 1) {
-					size += sizeof(netvar_ehndl_t<EHANDLE>);
-				} else {
-					size += netvar_arr_t<EHANDLE>::size(elementCount);
-				}
-			}
+			prop->extra_data().type = FIELD_EHANDLE;
 		} else {
 			switch(sizeofVar) {
 				case sizeof(bool): {
-					prop.extra_data().type = FIELD_BOOLEAN;
+					prop = emplace_prop<bool>(name, offset, elementCount);
 
-					if(offset == -1) {
-						if(elementCount == 1) {
-							size += sizeof(netvar_t<float>);
-						} else {
-							size += netvar_arr_t<float>::size(elementCount);
-						}
-					}
-				}
+					prop->extra_data().type = FIELD_BOOLEAN;
+				} break;
 				case sizeof(short): {
-					prop.extra_data().type = FIELD_SHORT;
+					prop = emplace_prop<short>(name, offset, elementCount);
 
-					if(offset == -1) {
-						if(elementCount == 1) {
-							size += sizeof(netvar_t<short>);
-						} else {
-							size += netvar_arr_t<short>::size(elementCount);
-						}
-					}
-				}
+					prop->extra_data().type = FIELD_SHORT;
+				} break;
 				case sizeof(int): {
-					prop.extra_data().type = FIELD_INTEGER;
+					prop = emplace_prop<int>(name, offset, elementCount);
 
-					if(offset == -1) {
-						if(elementCount == 1) {
-							size += sizeof(netvar_t<int>);
-						} else {
-							size += netvar_arr_t<int>::size(elementCount);
-						}
-					}
-				}
+					prop->extra_data().type = FIELD_INTEGER;
+				} break;
 			}
 		}
 
-		setup_array(name, prop, elementCount, sizeofVar);
+		prop->SetFlags(flags);
+		prop->SetProxyFn(proxy);
+		prop->m_nBits = nBits;
+		prop->m_Type = DPT_Int;
 
-		return prop;
+		int elementStride = sizeofVar;
+
+		setup_array(name, *prop, elementCount, elementStride);
+
+		return *prop;
 	}
 
 	void add_prop_ehandle(const std::string &name, int flags, int elementCount, int offset)
@@ -2282,25 +2321,30 @@ struct serverclass_override_t : public hookobj_t
 
 	IEntityFactory *hooked_fac = nullptr;
 	bool fac_is_sp = false;
+	std::string cls_name{};
 	custom_ServerClass cls{};
+	std::string cls_cl_name{};
+	std::string tbl_name{};
 	custom_SendTable tbl{};
+	std::string tbl_cl_name{};
+	int cl_classid = -1;
+	int classid = -1;
 	std::vector<custom_SendProp> props{};
 	ServerClass *realcls = nullptr;
-	ServerClass *fakecls = nullptr;
+	ServerClass *classid_cls = nullptr;
+	ServerClass *cl_name_cls = nullptr;
 	std::string clsname{};
 	Handle_t hndl = BAD_HANDLE;
 	IPluginContext *pContext = nullptr;
-	bool erase = true;
 	bool freehndl = true;
 	bool was_overriden = false;
+	bool cls_inited = false;
 	bool base_class_set = false;
-	bool cls_name_set = false;
-	bool tbl_name_set = false;
 	SendProp *m_pProps = nullptr;
 	int size = 0;
+	int largest_offset = 0;
 	std::vector<unexclude_prop_t> exclude_props{};
 	size_t counterid = 0;
-	int classid = 0;
 };
 
 class sp_entity_factory : public IEntityFactory
@@ -2332,12 +2376,12 @@ public:
 		}
 	}
 	size_t GetEntitySize() {
-		size_t realsiz = size;
+		int realsiz = size;
+		if(custom_server) {
+			custom_server->calc_size(realsiz);
+		}
 		if(custom_prop) {
 			realsiz += custom_prop->size;
-		}
-		if(custom_server) {
-			realsiz += custom_server->size;
 		}
 		return realsiz;
 	}
@@ -2403,7 +2447,7 @@ sp_entity_factory::~sp_entity_factory()
 		factory_aliases.erase(it);
 	}
 	
-	dictionary->remove_factory(this, name.c_str());
+	dictionary->remove_factory(this, name);
 	
 	factory_map.erase(name);
 	
@@ -2418,11 +2462,16 @@ sp_entity_factory::~sp_entity_factory()
 custom_prop_info_t *curr_data_info = nullptr;
 serverclass_override_t *curr_server_info = nullptr;
 
+std::unordered_map<int, ServerClass *> baselinemap{};
+
 using info_map_t = std::unordered_map<std::string, custom_prop_info_t *>;
 info_map_t info_map{};
 
 using server_map_t = std::unordered_map<std::string, serverclass_override_t *>;
 server_map_t server_map{};
+
+using server_ptr_map_t = std::unordered_map<ServerClass *, serverclass_override_t *>;
+server_ptr_map_t server_ptr_map{};
 
 void CEntityFactoryDictionary::remove_factory(IEntityFactory *fac, const std::string &name)
 {
@@ -2466,10 +2515,33 @@ ServerClass *custom_server_head = nullptr;
 
 class CNetworkStringTableContainer;
 enum server_state_t : int;
+class CEventInfo;
+
+#include <igameevents.h>
+#include <iclient.h>
+
+class CBaseClient : public IGameEventListener2, public IClient, public IClientMessageHandler
+{
+public:
+	
+};
+
+class CGameClient : public CBaseClient
+{
+public:
+	
+};
+
+class CClientFrame;
 
 class CBaseServer : public IServer
 {
 public:
+	virtual float	GetCPUUsage( void ) = 0;
+	virtual void	BroadcastPrintf ( PRINTF_FORMAT_STRING const char *fmt, ...) = 0;
+	virtual void	SetMaxClients( int number ) = 0;
+	virtual void	WriteDeltaEntities( CBaseClient *client, CClientFrame *to, CClientFrame *from,	bf_write &pBuf ) = 0;
+
 #if SOURCE_ENGINE == SE_TF2
 	server_state_t	m_State;		// some actions are only valid during load
 	int				m_Socket;		// network socket 
@@ -2499,7 +2571,39 @@ public:
 	
 	int			serverclasses;		// number of unique server classes
 	int			serverclassbits;	// log2 of serverclasses
+
+#if SOURCE_ENGINE == SE_TF2
+	int			m_nUserid;			// increases by one with every new client
+
+	int			m_nMaxclients;         // Current max #
+	int			m_nSpawnCount;			// Number of servers spawned since start,
+									// used to check late spawns (e.g., when d/l'ing lots of
+									// data)
+	float		m_flTickInterval;		// time for 1 tick in seconds
+
+	CUtlVector<CBaseClient*>	m_Clients;		// array of up to [maxclients] client slots.
 	
+	bool		m_bIsDedicated;
+
+	uint32		m_CurrentRandomNonce;
+	uint32		m_LastRandomNonce;
+	float		m_flLastRandomNumberGenerationTime;
+	float		m_fCPUPercent;
+	float		m_fStartTime;
+	float		m_fLastCPUCheckTime;
+
+	// This is only used for Steam's master server updater to refer to this server uniquely.
+	bool		m_bRestartOnLevelChange;
+	
+	bool		m_bMasterServerRulesDirty;
+	double		m_flLastMasterServerUpdateTime;
+
+	int			m_nNumConnections;		//Number of successful client connections.
+
+	bool		m_bReportNewFakeClients; // Whether or not newly created fake clients should be included in server browser totals
+	float		m_flPausedTimeEnd;
+#endif
+
 	void increment_svclasses()
 	{
 		++serverclasses;
@@ -2514,6 +2618,32 @@ public:
 			serverclassbits = 0;
 		}
 	}
+};
+
+class CGameServer : public CBaseServer
+{
+public:
+	bool		m_bLoadgame;			// handle connections specially
+	
+	char		m_szStartspot[64];
+	
+	int			num_edicts;
+	int			max_edicts;
+	int			free_edicts; // how many edicts in num_edicts are free, in use is num_edicts - free_edicts
+	edict_t		*edicts;			// Can array index now, edict_t is fixed
+	IChangeInfoAccessor *edictchangeinfo; // HACK to allow backward compat since we can't change edict_t layout
+
+	int			m_nMaxClientsLimit;    // Max allowed on server.
+	
+	bool		allowsignonwrites;
+	bool	    dll_initialized;    // Have we loaded the game dll.
+
+	bool		m_bIsLevelMainMenuBackground;	// true if the level running only as the background to the main menu
+
+	CUtlVector<CEventInfo*>	m_TempEntities;		// temp entities
+
+	bf_write			m_FullSendTables;
+	CUtlMemory<byte>	m_FullSendTablesBuffer;
 };
 
 void serverclass_override_t::unexclude_prop(SendProp *prop, SendProp *realprop)
@@ -2555,66 +2685,373 @@ void serverclass_override_t::set_base_class(SendTable *table2)
 	prop->m_pVarName = "baseclass";
 	prop->SetOffset(0);
 	prop->SetDataTable(table2);
-	prop->SetDataTableProxyFn(SendProxy_DataTableToDataTable);
+	prop->SetDataTableProxyFn(std_proxies->m_DataTableToDataTable);
 	prop->SetFlags(SPROP_PROXY_ALWAYS_YES|SPROP_COLLAPSIBLE);
 	
 	base_class_set = true;
 }
 
-void serverclass_override_t::remove_base_line()
-{
-	if(cls.m_InstanceBaselineIndex == INVALID_STRING_INDEX) {
-		return;
-	}
-	
-	bool lock = engine->LockNetworkStringTables(true);
-	//m_pInstanceBaselineTable->RemoveString;
-	engine->LockNetworkStringTables(lock);
-	
-	cls.m_InstanceBaselineIndex = INVALID_STRING_INDEX;
-}
-
-void serverclass_override_t::override_with(ServerClass *netclass)
-{
-	fakecls = netclass;
-	
-	cls.m_ClassID = fakecls->m_ClassID;
-	classid = fakecls->m_ClassID;
-
-	cls.m_InstanceBaselineIndex = fakecls->m_InstanceBaselineIndex;
-
-	tbl.m_pPrecalc = fakecls->m_pTable->m_pPrecalc;
-}
+static int classid_last{0};
+static int def_classid_last{0};
+static bool classids_assigned{false};
 
 size_t classoverridecounter = 0;
 
-void serverclass_override_t::init()
+static ServerClass *CBaseEntity_ServerClass = nullptr;
+
+class CSendNode
 {
-	props[0].SetDataTable(realcls->m_pTable);
+public:
+					CSendNode();
+					~CSendNode();
 
-	if(!tbl_name_set) {
-		std::string tablename{realcls->m_pTable->m_pNetTableName};
-		tbl.set_name(tablename);
+	inline int GetNumChildren() const
+	{
+		return m_Children.Count(); 
 	}
 
-	if(!cls_name_set) {
-		std::string netname{realcls->m_pNetworkName};
-		netname += "_custom_";
-		netname += std::to_string(counterid);
-		cls.set_name(netname);
+	inline CSendNode* GetChild( int i ) const
+	{
+		return m_Children[i];
 	}
 
-	if(!fakecls) {
-		cls.m_ClassID = realcls->m_ClassID;
-		classid = realcls->m_ClassID;
+	inline unsigned short GetDataTableProxyIndex() const
+	{
+		return m_DataTableProxyIndex;
+	}
 
-		cls.m_InstanceBaselineIndex = realcls->m_InstanceBaselineIndex;
+	inline void SetDataTableProxyIndex( unsigned short val )
+	{
+		m_DataTableProxyIndex = val;
+	}
 
-		tbl.m_pPrecalc = realcls->m_pTable->m_pPrecalc;
+	inline unsigned short GetRecursiveProxyIndex() const
+	{
+		return m_RecursiveProxyIndex;
+	}
+
+	inline void SetRecursiveProxyIndex( unsigned short val )
+	{
+		m_RecursiveProxyIndex = val;
+	}
+
+	// Child datatables.
+	CUtlVector<CSendNode*>	m_Children;
+
+	// The datatable property that leads us to this CSendNode.
+	// This indexes the CSendTablePrecalc or CRecvDecoder's m_DatatableProps list.
+	// The root CSendNode sets this to -1.
+	short					m_iDatatableProp;
+
+	// The SendTable that this node represents.
+	// ALL CSendNodes have this.
+	const SendTable	*m_pTable;
+
+	//
+	// Properties in this table.
+	//
+
+	// m_iFirstRecursiveProp to m_nRecursiveProps defines the list of propertise
+	// of this node and all its children.
+	unsigned short	m_iFirstRecursiveProp;
+	unsigned short	m_nRecursiveProps;
+
+
+	// See GetDataTableProxyIndex().
+	unsigned short	m_DataTableProxyIndex;
+	
+	// See GetRecursiveProxyIndex().
+	unsigned short	m_RecursiveProxyIndex;
+};
+
+CSendNode::CSendNode()
+{
+	m_iDatatableProp = -1;
+	m_pTable = NULL;
+	
+	m_iFirstRecursiveProp = m_nRecursiveProps = 0;
+
+	m_DataTableProxyIndex = DATATABLE_PROXY_INDEX_INVALID; // set it to a questionable value.
+}
+
+CSendNode::~CSendNode()
+{
+	int c = GetNumChildren();
+	for ( int i = c - 1 ; i >= 0 ; i-- )
+	{
+		delete GetChild( i );
+	}
+	m_Children.Purge();
+}
+
+#define DELTA_DISTANCE_BAND			200
+#define NUM_DELTA_DISTANCE_BANDS	(8000/DELTA_DISTANCE_BAND)
+
+class CDTISendTable
+{
+public:
+	// Which SendTable we're interested in.
+	CUtlString		m_NetTableName;
+
+	// How many cycles we've spent in certain calls.
+	CCycleCount		m_nCalcDeltaCycles;
+	int				m_nCalcDeltaCalls;
+
+	CCycleCount		m_nEncodeCycles;
+	int				m_nEncodeCalls;
+
+	CCycleCount		m_nShouldTransmitCycles;
+	int				m_nShouldTransmitCalls;
+
+	CCycleCount		m_nWriteDeltaPropsCycles;
+
+	// Used to determine how much the class uses manual mode.
+	int m_nChangeAutoDetects;
+	int m_nNoChanges;
+
+	// This tracks how many times an entity was delta'd for each distance from a client.
+	unsigned short	m_DistanceDeltaCounts[NUM_DELTA_DISTANCE_BANDS];
+};
+
+class CFastLocalTransferPropInfo
+{
+public:
+	unsigned short	m_iRecvOffset;
+	unsigned short	m_iSendOffset;
+	unsigned short	m_iProp;
+};
+
+class CFastLocalTransferInfo
+{
+public:
+	CUtlVector<CFastLocalTransferPropInfo> m_FastInt32;
+	CUtlVector<CFastLocalTransferPropInfo> m_FastInt16;
+	CUtlVector<CFastLocalTransferPropInfo> m_FastInt8;
+	CUtlVector<CFastLocalTransferPropInfo> m_FastVector;
+	CUtlVector<CFastLocalTransferPropInfo> m_OtherProps;	// Props that must be copied slowly (proxies and all).
+};
+
+void *CSendTablePrecalcCTOR{nullptr};
+
+#define MAX_EXCLUDE_PROPS		512
+#define MAX_PROXY_RESULTS 256
+
+class CSendTablePrecalc
+{
+public:
+	virtual ~CSendTablePrecalc() = 0;
+
+	inline int GetNumProps() const
+	{
+		return m_Props.Count();
+	}
+
+	inline const SendProp* GetProp( int i ) const
+	{
+		return m_Props[i]; 
+	}
+
+	inline int GetNumDataTableProxies() const
+	{
+		return m_nDataTableProxies;
+	}
+
+	inline void SetNumDataTableProxies( int count )
+	{
+		m_nDataTableProxies = count;
+	}
+
+	inline SendTable* GetSendTable() const
+	{
+		return m_pSendTable; 
+	}
+
+	inline CSendNode* GetRootNode()
+	{
+		return &m_Root; 
+	}
+
+	bool SetupFlatPropertyArray();
+
+	class CProxyPathEntry
+	{
+	public:
+		unsigned short m_iDatatableProp;	// Lookup into CSendTablePrecalc or CRecvDecoder::m_DatatableProps.
+		unsigned short m_iProxy;
+	};
+	class CProxyPath
+	{
+	public:
+		unsigned short m_iFirstEntry;	// Index into m_ProxyPathEntries.
+		unsigned short m_nEntries;
+	};
+	
+	CUtlVector<CProxyPathEntry> m_ProxyPathEntries;	// For each proxy index, this is all the DT proxies that generate it.
+	CUtlVector<CProxyPath> m_ProxyPaths;			// CProxyPathEntries lookup into this.
+	
+	// These are what CSendNodes reference.
+	// These are actual data properties (ints, floats, etc).
+	CUtlVector<const SendProp*>	m_Props;
+
+	// Each datatable in a SendTable's tree gets a proxy index, and its properties reference that.
+	CUtlVector<unsigned char> m_PropProxyIndices;
+	
+	// CSendNode::m_iDatatableProp indexes this.
+	// These are the datatable properties (SendPropDataTable).
+	CUtlVector<const SendProp*>	m_DatatableProps;
+
+	// This is the property hierarchy, with the nodes indexing m_Props.
+	CSendNode				m_Root;
+
+	// From whence we came.
+	SendTable				*m_pSendTable;
+
+	// For instrumentation.
+	CDTISendTable			*m_pDTITable;
+
+	// This is precalculated in single player to allow faster direct copying of the entity data
+	// from the server entity to the client entity.
+	CFastLocalTransferInfo	m_FastLocalTransfer;
+
+	// This tells how many data table properties there are without SPROP_PROXY_ALWAYS_YES.
+	// Arrays allocated with this size can be indexed by CSendNode::GetDataTableProxyIndex().
+	int						m_nDataTableProxies;
+	
+	// Map prop offsets to indices for properties that can use it.
+	CUtlMap<unsigned short, unsigned short> m_PropOffsetToIndexMap;
+};
+
+static void SendTable_CalcNextVectorElems( SendTable *pTable )
+{
+	for ( int i=0; i < pTable->GetNumProps(); i++ )
+	{
+		SendProp *pProp = pTable->GetProp( i );
+		
+		if ( pProp->GetType() == DPT_DataTable )
+		{
+			SendTable_CalcNextVectorElems( pProp->GetDataTable() );
+		}
+		else if ( pProp->GetOffset() < 0 )
+		{
+			pProp->SetOffset( -pProp->GetOffset() );
+			pProp->SetFlags( pProp->GetFlags() | SPROP_IS_A_VECTOR_ELEM );
+		}
 	}
 }
 
-static ServerClass *CBaseEntity_ServerClass = nullptr;
+static void SendTable_Validate( CSendTablePrecalc *pPrecalc )
+{
+	SendTable *pTable = pPrecalc->m_pSendTable;
+
+	for ( int i = 0; i < pPrecalc->GetNumProps(); ++i )
+	{
+		const SendProp *pProp = pPrecalc->GetProp( i );
+		if ( pProp->GetFlags() & SPROP_ENCODED_AGAINST_TICKCOUNT )
+		{
+			pTable->SetHasPropsEncodedAgainstTickcount( true );
+			break;
+		}
+	}
+}
+
+void *ServerDTI_HookTablePtr{nullptr};
+
+CDTISendTable* ServerDTI_HookTable( SendTable *pTable )
+{
+	return (void_to_func<CDTISendTable *(*)(SendTable *)>(ServerDTI_HookTablePtr))(pTable);
+}
+
+CRC32_t SendTable_CRCTable( CRC32_t &crc, SendTable *pTable )
+{
+	CRC32_ProcessBuffer( &crc, (void *)pTable->m_pNetTableName, Q_strlen( pTable->m_pNetTableName) );
+
+	int nProps = LittleLong( pTable->m_nProps );
+	CRC32_ProcessBuffer( &crc, (void *)&nProps, sizeof( pTable->m_nProps ) );
+
+	// Send each property.
+	for ( int iProp=0; iProp < pTable->m_nProps; iProp++ )
+	{
+		const SendProp *pProp = &pTable->m_pProps[iProp];
+
+		int type = LittleLong( pProp->m_Type );
+		CRC32_ProcessBuffer( &crc, (void *)&type, sizeof( type ) );
+		CRC32_ProcessBuffer( &crc, (void *)pProp->GetName() , Q_strlen( pProp->GetName() ) );
+
+		int flags = LittleLong( pProp->GetFlags() );
+		CRC32_ProcessBuffer( &crc, (void *)&flags, sizeof( flags ) );
+
+		if( pProp->m_Type == DPT_DataTable )
+		{
+			CRC32_ProcessBuffer( &crc, (void *)pProp->GetDataTable()->m_pNetTableName, Q_strlen( pProp->GetDataTable()->m_pNetTableName ) );
+		}
+		else
+		{
+			if ( pProp->IsExcludeProp() )
+			{
+				CRC32_ProcessBuffer( &crc, (void *)pProp->GetExcludeDTName(), Q_strlen( pProp->GetExcludeDTName() ) );
+			}
+			else if ( pProp->GetType() == DPT_Array )
+			{
+				int numelements = LittleLong( pProp->GetNumElements() );
+				CRC32_ProcessBuffer( &crc, (void *)&numelements, sizeof( numelements ) );
+			}
+			else
+			{	
+				float lowvalue;
+				LittleFloat( &lowvalue, &pProp->m_fLowValue );
+				CRC32_ProcessBuffer( &crc, (void *)&lowvalue, sizeof( lowvalue ) );
+
+				float highvalue;
+				LittleFloat( &highvalue, &pProp->m_fHighValue );
+				CRC32_ProcessBuffer( &crc, (void *)&highvalue, sizeof( highvalue ) );
+
+				int	bits = LittleLong( pProp->m_nBits );
+				CRC32_ProcessBuffer( &crc, (void *)&bits, sizeof( bits ) );
+			}
+		}
+	}
+
+	return crc;
+}
+
+int SV_BuildSendTablesArray( ServerClass *pClasses, SendTable **pTables, int nMaxTables )
+{
+	int nTables = 0;
+
+	for( ServerClass *pCur=pClasses; pCur; pCur=pCur->m_pNext )
+	{
+		pTables[nTables] = pCur->m_pTable;
+		++nTables;
+	}
+
+	return nTables;
+}
+
+CRC32_t SendTable_ComputeCRC()
+{
+	CRC32_t result;
+	CRC32_Init( &result );
+
+	// walk the tables and checksum them
+	int c = g_SendTables->Count();
+	for ( int i = 0 ; i < c; i++ )
+	{
+		SendTable *st = (*g_SendTables)[ i ];
+		result = SendTable_CRCTable( result, st );
+	}
+
+	CRC32_Final( &result );
+
+	return result;
+}
+
+static void SendTable_TermTable( SendTable *pTable )
+{
+	if( !pTable->m_pPrecalc )
+		return;
+
+	delete pTable->m_pPrecalc;
+}
 
 serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_)
 	: hooked_fac{fac_}, clsname{std::move(clsname_)}, realcls{realcls_}
@@ -2628,6 +3065,7 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	}
 	
 	server_map.emplace(clsname, this);
+	server_ptr_map.emplace((ServerClass *)&cls, this);
 	
 	counterid = classoverridecounter++;
 	
@@ -2635,33 +3073,27 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	prop->m_Type = DPT_DataTable;
 	prop->set_name("baseclass"s);
 	prop->SetOffset(0);
-	prop->SetDataTableProxyFn(SendProxy_DataTableToDataTable);
+	prop->SetDataTableProxyFn(std_proxies->m_DataTableToDataTable);
 	prop->SetFlags(SPROP_PROXY_ALWAYS_YES|SPROP_COLLAPSIBLE);
 	
 	cls.m_pTable = &tbl;
-	
+	cls.m_InstanceBaselineIndex = INVALID_STRING_INDEX;
+
 	cls.m_pNext = custom_server_head;
 	custom_server_head = (ServerClass *)&cls;
 
 	g_pServerClassTail->m_pNext = custom_server_head;
 
-	((CBaseServer *)server)->increment_svclasses();
-	
+	init_classid();
+
 	if(realcls) {
 		init();
+		cls_inited = true;
 	} else {
-		SendTable *CBaseEntity_SendTable = CBaseEntity_ServerClass->m_pTable;
-
-		props[0].SetDataTable(CBaseEntity_SendTable);
-		tbl.m_pPrecalc = CBaseEntity_SendTable->m_pPrecalc;
+		props[0].SetDataTable(CBaseEntity_ServerClass->m_pTable);
 		
-		tbl.set_name("DT_BaseEntity");
-		cls.set_name("CBaseEntity");
-
-		cls.m_ClassID = CBaseEntity_ServerClass->m_ClassID;
-		classid = CBaseEntity_ServerClass->m_ClassID;
-
-		cls.m_InstanceBaselineIndex = CBaseEntity_ServerClass->m_InstanceBaselineIndex;
+		tbl.set_name("DT_BaseEntity"s);
+		cls.set_name("CBaseEntity"s);
 	}
 }
 
@@ -2674,12 +3106,12 @@ void serverclass_override_t::factory_removed(IEntityFactory *fac)
 
 serverclass_override_t::~serverclass_override_t()
 {
-	--classoverridecounter;
-	
-	if(erase) {
-		server_map.erase(clsname);
-	}
-	
+	server_map.erase(clsname);
+
+	server_ptr_map.erase((ServerClass *)&cls);
+
+	baselinemap.erase(classid);
+
 	for(ServerClass *cur = custom_server_head, *prev = nullptr; cur != nullptr; prev = cur, cur = cur->m_pNext) {
 		if (cur == (ServerClass *)&cls) {
 			if(prev != nullptr) {
@@ -2693,7 +3125,17 @@ serverclass_override_t::~serverclass_override_t()
 	}
 
 	g_pServerClassTail->m_pNext = custom_server_head;
-	
+
+	if(!custom_server_head) {
+		--classoverridecounter;
+		--classid_last;
+	}
+
+	if(server_map.empty()) {
+		classoverridecounter = 0;
+		classid_last = def_classid_last;
+	}
+
 	for(auto &it : exclude_props) {
 		it.remove();
 	}
@@ -2710,17 +3152,20 @@ serverclass_override_t::~serverclass_override_t()
 	((CBaseServer *)server)->decrement_svclasses();
 	
 	remove_serverclass_from_sm_cache((ServerClass *)&cls);
-	
+
+#ifdef __HAS_PROXYSEND
+	if(proxysend) {
+		proxysend->remove_serverclass_from_cache((ServerClass *)&cls);
+	}
+#endif
+
 	if(!fac_is_sp && hooked_fac) {
 		factory_removed(hooked_fac);
 	}
 
-	for(custom_SendProp &prop : props) {
-		prop.clear_name();
-	}
-
-	tbl.clear_name();
 	cls.clear_name();
+
+	term_datatable();
 
 	if(freehndl) {
 		if(hndl != BAD_HANDLE) {
@@ -2733,16 +3178,18 @@ serverclass_override_t::~serverclass_override_t()
 void *DoPvAllocEntPrivateData(long cb)
 {
 	last_cb = cb;
+
+	int new_cb{last_cb};
+
+	if(curr_server_info != nullptr) {
+		curr_server_info->calc_size(new_cb);
+	}
 	
 	if(curr_data_info != nullptr) {
-		cb += curr_data_info->size;
+		new_cb += curr_data_info->size;
 	}
 	
-	if(curr_server_info != nullptr) {
-		cb += curr_server_info->size;
-	}
-	
-	return calloc(1, cb);
+	return calloc(1, new_cb);
 }
 
 void *HookPvAllocEntPrivateData(long cb)
@@ -2779,12 +3226,12 @@ void custom_prop_info_t::factory_removed(IEntityFactory *fac)
 
 custom_prop_info_t::~custom_prop_info_t()
 {
-	--datamapoverridecounter;
-	
-	if(erase) {
-		info_map.erase(clsname);
+	info_map.erase(clsname);
+
+	if(info_map.empty()) {
+		datamapoverridecounter = 0;
 	}
-	
+
 	remove_datamap_from_sm_cache(&map);
 	
 	if(!fac_is_sp && hooked_fac) {
@@ -2805,15 +3252,46 @@ custom_prop_info_t::~custom_prop_info_t()
 	}
 }
 
-void serverclass_override_t::do_override(int &base, CBaseEntity *pEntity, IServerNetworkable *pNet)
+void serverclass_override_t::calc_size(int &base)
 {
-	if(!realcls) {
-		realcls = pEntity->GetServerClass();
-		init();
+	if(largest_offset >= base) {
+		base = largest_offset;
 	}
 
+	base += size;
+}
+
+void serverclass_override_t::update_offsets(int &base)
+{
+	if(largest_offset >= base) {
+		base = largest_offset;
+	}
+
+	for(std::size_t i{1}; i < props.size(); ++i) {
+		custom_SendProp &prop{props[i]};
+		if(prop.GetType() == DPT_Array ||
+			prop.extra_data().absoffset) {
+			continue;
+		}
+		prop.SetOffset(base + prop.GetOffset());
+	}
+
+	base += size;
+}
+
+void serverclass_override_t::do_override(int &base, CBaseEntity *pEntity, IServerNetworkable *pNet)
+{
 	if(!was_overriden) {
+		if(!cls_inited) {
+			realcls = pEntity->GetServerClass();
+			init();
+			cls_inited = true;
+		}
+
 		update_offsets(base);
+
+		setup_datatable();
+
 		was_overriden = true;
 	}
 
@@ -2830,7 +3308,7 @@ void custom_prop_info_t::do_override(int &base, CBaseEntity *pEntity)
 		
 		if(mapname.empty()) {
 			mapname = svcls->GetName();
-			mapname += "_custom_";
+			mapname += "_custom_"s;
 			mapname += std::to_string(counterid);
 		}
 		map.set_name(mapname);
@@ -2910,11 +3388,12 @@ IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
 		curr_server_info = nullptr;
 		CBaseEntity *pEntity = net->GetBaseEntity();
 		//last_cb = based->GetEntitySize();
-		if(custom_prop) {
-			custom_prop->do_override(last_cb, pEntity);
-		}
+		int new_cb{last_cb};
 		if(custom_server) {
-			custom_server->do_override(last_cb, pEntity, net);
+			custom_server->do_override(new_cb, pEntity, net);
+		}
+		if(custom_prop) {
+			custom_prop->do_override(new_cb, pEntity);
 		}
 		((CGlobalEntityListHack *)g_pEntityList)->SendEntityListeners(pEntity);
 	} else if(func != nullptr) {
@@ -2930,17 +3409,18 @@ IServerNetworkable *sp_entity_factory::Create(const char *pClassName)
 		func->PushCell(data);
 		func->Execute(&res);
 		last_cb = size;
+		int new_cb{last_cb};
 		CBaseEntity *obj = (CBaseEntity *)res;
 		if(obj != nullptr) {
-			net = obj->GetNetworkable();
 			ignore_entity_listeners = true;
 			obj->PostConstructor(pClassName);
 			ignore_entity_listeners = false;
-			if(custom_prop) {
-				custom_prop->do_override(last_cb, obj);
-			}
+			net = obj->GetNetworkable();
 			if(custom_server) {
-				custom_server->do_override(last_cb, obj, net);
+				custom_server->do_override(new_cb, obj, net);
+			}
+			if(custom_prop) {
+				custom_prop->do_override(new_cb, obj);
 			}
 			((CGlobalEntityListHack *)g_pEntityList)->SendEntityListeners(obj);
 		}
@@ -3438,8 +3918,12 @@ cell_t CustomSendtableset_name(IPluginContext *pContext, const cell_t *params)
 	char *name = nullptr;
 	pContext->LocalToString(params[2], &name);
 
-	factory->tbl.set_name(name);
-	factory->tbl_name_set = true;
+	std::string namestr{name};
+
+	if(factory->cls_inited) {
+		factory->tbl.set_name(namestr);
+	}
+	factory->tbl_name = std::move(namestr);
 
 	return 0;
 }
@@ -3458,9 +3942,53 @@ cell_t CustomSendtableset_network_name(IPluginContext *pContext, const cell_t *p
 	char *name = nullptr;
 	pContext->LocalToString(params[2], &name);
 
-	factory->cls.set_name(name);
-	factory->cls_name_set = true;
+	std::string namestr{name};
 
+	if(factory->cls_inited) {
+		factory->cls.set_name(namestr);
+	}
+	factory->cls_name = std::move(namestr);
+
+	return 0;
+}
+
+cell_t CustomSendtableset_client_class_name(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	serverclass_override_t *factory = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	char *name = nullptr;
+	pContext->LocalToString(params[2], &name);
+
+	std::string namestr{name};
+
+	factory->cls_cl_name = std::move(namestr);
+	return 0;
+}
+
+cell_t CustomSendtableset_client_name(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	serverclass_override_t *factory = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&factory);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	char *name = nullptr;
+	pContext->LocalToString(params[2], &name);
+
+	std::string namestr{name};
+
+	factory->tbl_cl_name = std::move(namestr);
 	return 0;
 }
 
@@ -3779,11 +4307,13 @@ sp_nativeinfo_t natives[] =
 	{"EntityFactoryDictionary.remove", EntityFactoryDictionaryremove},
 	{"CustomSendtable.from_factory", CustomSendtablefrom_factory},
 	{"CustomSendtable.from_classname", CustomSendtablefrom_classname},
-	{"CustomSendtable.override_with", CustomSendtableoverride_with},
+	{"CustomSendtable.set_client_class_id", CustomSendtableoverride_with},
 	{"CustomSendtable.unexclude_prop", CustomSendtableunexclude_prop},
 	{"CustomSendtable.set_base_class", CustomSendtableset_base_class},
 	{"CustomSendtable.set_name", CustomSendtableset_name},
-	{"CustomSendtable.set_network_name", CustomSendtableset_network_name},
+	{"CustomSendtable.set_class_name", CustomSendtableset_network_name},
+	{"CustomSendtable.set_client_name", CustomSendtableset_client_name},
+	{"CustomSendtable.set_client_class_name", CustomSendtableset_client_class_name},
 	{"CustomSendtable.add_prop_float", CustomSendtableadd_prop_float},
 	{"CustomSendtable.add_prop_int", CustomSendtableadd_prop_int},
 	{"CustomSendtable.add_prop_ehandle", CustomSendtableadd_prop_ehandle},
@@ -3879,8 +4409,6 @@ DETOUR_DECL_MEMBER1(DetourPvAllocEntPrivateData, void *, long, cb)
 	return DoPvAllocEntPrivateData(cb);
 }
 
-std::unordered_map<int, ServerClass *> baselinemap{};
-
 static ConVar *sv_parallel_packentities{nullptr};
 
 #ifdef __HAS_PROXYSEND
@@ -3907,6 +4435,13 @@ DETOUR_DECL_STATIC3(SV_ComputeClientPacks, void, int, clientCount, CGameClient *
 	DETOUR_STATIC_CALL(SV_ComputeClientPacks)(clientCount, clients, snapshot);
 }
 
+DETOUR_DECL_MEMBER4(CBaseServer_WriteDeltaEntities, void, CBaseClient *, client, CClientFrame *, to, CClientFrame *, from, bf_write &, pBuf)
+{
+	g_Sample.pre_write_deltas();
+	DETOUR_MEMBER_CALL(CBaseServer_WriteDeltaEntities)(client, to, from, pBuf);
+	g_Sample.post_write_deltas();
+}
+
 static ConVar *sv_sendtables{nullptr};
 
 bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool late)
@@ -3926,7 +4461,7 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	g_pServerClassHead = gamedll->GetAllServerClasses();
 	g_pServerClassTail = g_pServerClassHead;
 	while(true) {
-		baselinemap[g_pServerClassTail->m_ClassID] = g_pServerClassTail;
+		++g_iNumServerClasses;
 
 		if(strcmp(g_pServerClassTail->m_pNetworkName, "CBaseEntity") == 0) {
 			CBaseEntity_ServerClass = g_pServerClassTail;
@@ -3944,7 +4479,6 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 		
 		g_pServerClassTail = g_pServerClassTail->m_pNext;
 	}
-	m_pInstanceBaselineTable = netstringtables->FindTable(INSTANCE_BASELINE_TABLENAME);
 #if SOURCE_ENGINE == SE_TF2
 	server = engine->GetIServer();
 #endif
@@ -3973,19 +4507,22 @@ CDetour *pPhysicsRunSpecificThink = nullptr;
 CDetour *pCGameServerAssignClassIds = nullptr;
 
 CDetour *SendTable_GetCRC_detour = nullptr;
-CDetour *SV_CreateBaseline_detour{nullptr};
 CDetour *pCGameClientSendSignonData = nullptr;
-CDetour *pSVC_ClassInfoWriteToBuffer = nullptr;
+CDetour *SV_CreateBaseline_detour{nullptr};
+CDetour *SV_EnsureInstanceBaseline_detour{nullptr};
 
 static bool in_send_signondata{false};
-
-#include <tier1/checksum_crc.h>
-
-CRC32_t *g_SendTableCRC{nullptr};
 
 void Sample::OnCoreMapStart(edict_t *pEdictList, int edictCount, int clientMax)
 {
 	m_pInstanceBaselineTable = netstringtables->FindTable(INSTANCE_BASELINE_TABLENAME);
+}
+
+void Sample::OnCoreMapEnd()
+{
+	classids_assigned = false;
+	classid_last = 0;
+	def_classid_last = 0;
 }
 
 static void Host_Error(const char *error, ...) noexcept
@@ -4000,112 +4537,7 @@ static void Host_Error(const char *error, ...) noexcept
 	Error("Host_Error: %s", string);
 }
 
-void *SV_WriteSendTablesPtr{nullptr};
-void *SV_WriteClassInfosPtr{nullptr};
-
-void SV_WriteSendTables( ServerClass *pClasses, bf_write &pBuf )
-{
-	(void_to_func<void(*)(ServerClass *, bf_write &)>(SV_WriteSendTablesPtr))(pClasses, pBuf);
-}
-
-void SV_WriteClassInfos(ServerClass *pClasses, bf_write &pBuf)
-{
-	(void_to_func<void(*)(ServerClass *, bf_write &)>(SV_WriteClassInfosPtr))(pClasses, pBuf);
-}
-
-bf_write			m_FullSendTables;
-CUtlMemory<byte>	m_FullSendTablesBuffer;
-
 #define	NET_MAX_PAYLOAD				288000	
-
-ConVar sv_sendcustomtables{"sv_sendcustomtables", "0"};
-ConVar sv_sendclasses{"sv_sendclasses", "0"};
-
-DETOUR_DECL_STATIC0(SV_CreateBaseline, void)
-{
-	DETOUR_STATIC_CALL(SV_CreateBaseline)();
-
-	if(sv_sendtables->GetInt() == 0 && (sv_sendclasses.GetBool() || sv_sendcustomtables.GetBool())) {
-		m_FullSendTablesBuffer.EnsureCapacity( NET_MAX_PAYLOAD );
-		m_FullSendTables.StartWriting( m_FullSendTablesBuffer.Base(), m_FullSendTablesBuffer.Count() );
-
-		if(sv_sendcustomtables.GetBool() && custom_server_head) {
-			SV_WriteSendTables( custom_server_head, m_FullSendTables );
-
-			if ( m_FullSendTables.IsOverflowed() )
-			{
-				Host_Error("SV_CreateBaseline: WriteSendTables overflow.\n" );
-				return;
-			}
-		}
-
-		if(sv_sendclasses.GetBool()) {
-			// Send class descriptions.
-			SV_WriteClassInfos(g_pServerClassHead, m_FullSendTables);
-
-			if ( m_FullSendTables.IsOverflowed() )
-			{
-				Host_Error("SV_CreateBaseline: WriteClassInfos overflow.\n" );
-				return;
-			}
-		}
-	}
-}
-
-ConVar sv_nocustomclassids{"sv_nocustomclassids", "1"};
-
-DETOUR_DECL_MEMBER0(DetourCGameServerAssignClassIds, void)
-{
-	DETOUR_MEMBER_CALL(DetourCGameServerAssignClassIds)();
-
-	if(sv_nocustomclassids.GetBool()) {
-		for(auto &it : server_map) {
-			it.second->cls.m_ClassID = it.second->classid;
-		}
-	}
-}
-
-#include <igameevents.h>
-#include <iclient.h>
-#include <inetchannel.h>
-
-class CGameClient : public IGameEventListener2, public IClient, public IClientMessageHandler
-{
-public:
-	
-};
-
-DETOUR_DECL_MEMBER0(DetourCGameClientSendSignonData, bool)
-{
-	CGameClient *pThis = (CGameClient *)this;
-
-	if(sv_sendtables->GetInt() == 0 && (sv_sendclasses.GetBool() || sv_sendcustomtables.GetBool())) {
-		if ( m_FullSendTables.IsOverflowed() )
-		{
-			Host_Error( "Send Table signon buffer overflowed %i bytes!!!\n", m_FullSendTables.GetNumBytesWritten() );
-			return false;
-		}
-
-		pThis->GetNetChannel()->SendData( m_FullSendTables );
-	}
-
-	in_send_signondata = true;
-	bool ret = DETOUR_MEMBER_CALL(DetourCGameClientSendSignonData)();
-	in_send_signondata = false;
-
-	return ret;
-}
-
-DETOUR_DECL_STATIC0(SendTable_GetCRC, CRC32_t)
-{
-	if(in_send_signondata && sv_sendtables->GetInt() == 2) {
-		CRC32_t tmp;
-		CRC32_Init(&tmp);
-		return tmp;
-	} else {
-		return DETOUR_STATIC_CALL(SendTable_GetCRC)();
-	}
-}
 
 #include <inetmessage.h>
 
@@ -4114,7 +4546,10 @@ class CNetMessage : public INetMessage
 public:
 	bool				m_bReliable;	// true if message should be send reliable
 	INetChannel			*m_NetChannel;	// netchannel this message is from/for
+	char pad[4];
 };
+
+#define NETMSG_TYPE_BITS	6	// must be 2^NETMSG_TYPE_BITS > SVC_LASTMSG
 
 class SVC_ClassInfo : public CNetMessage
 {
@@ -4131,18 +4566,155 @@ public:
 	bool					m_bCreateOnClient;	// if true, client creates own SendTables & classinfos from game.dll
 	CUtlVector<class_t>		m_Classes;			
 	int						m_nNumServerClasses;
+
+	bool WriteToBuffer_impl( bf_write &buffer )
+	{
+		if ( !m_bCreateOnClient )
+		{
+			m_nNumServerClasses = m_Classes.Count();	// use number from list list	
+		}
+		
+		buffer.WriteUBitLong( svc_ClassInfo, NETMSG_TYPE_BITS );
+
+		buffer.WriteShort( m_nNumServerClasses );
+
+		int serverClassBits = Q_log2( m_nNumServerClasses ) + 1;
+
+		buffer.WriteOneBit( m_bCreateOnClient?1:0 );
+
+		if ( m_bCreateOnClient )
+			return !buffer.IsOverflowed();
+
+		for ( int i=0; i< m_nNumServerClasses; i++ )
+		{
+			class_t * serverclass = &m_Classes[i];
+
+			buffer.WriteUBitLong( serverclass->classID, serverClassBits );
+			buffer.WriteString( serverclass->classname );
+			buffer.WriteString( serverclass->datatablename );
+		}
+
+		return !buffer.IsOverflowed();
+	}
 };
 
-ConVar sv_createclasses{"sv_createclasses", "0"};
-
-DETOUR_DECL_MEMBER1(DetourSVC_ClassInfoWriteToBuffer, bool, bf_write &, buffer)
+static void handle_classinfos(SVC_ClassInfo &classinfomsg)
 {
-	SVC_ClassInfo *msg = reinterpret_cast<SVC_ClassInfo *>(this);
+	int nClasses = 0;
 
-	msg->m_bCreateOnClient = sv_createclasses.GetBool();
+	for ( ServerClass *pClass=g_pServerClassHead; pClass && pClass != custom_server_head; pClass=pClass->m_pNext )
+	{
+		SVC_ClassInfo::class_t svclass;
 
-	return DETOUR_MEMBER_CALL(DetourSVC_ClassInfoWriteToBuffer)(buffer);
+		svclass.classID = pClass->m_ClassID;
+		Q_strncpy( svclass.datatablename, pClass->m_pTable->GetName(), sizeof(svclass.datatablename) );
+		Q_strncpy( svclass.classname, pClass->m_pNetworkName, sizeof(svclass.classname) );
+
+		classinfomsg.m_Classes.AddToTail( svclass );  // add all known classes to message
+
+		++nClasses;
+	}
+
+	for ( ServerClass *pClass=custom_server_head; pClass; pClass=pClass->m_pNext )
+	{
+		SVC_ClassInfo::class_t svclass;
+
+		const char *netname{pClass->m_pNetworkName};
+		const char *tblname{pClass->m_pTable->GetName()};
+
+		auto it{server_ptr_map.find(pClass)};
+		if(it != server_ptr_map.end()) {
+			serverclass_override_t &overr{*it->second};
+			if(!overr.cls_cl_name.empty()) {
+				netname = overr.cls_cl_name.c_str();
+			}
+			if(!overr.tbl_cl_name.empty()) {
+				tblname = overr.tbl_cl_name.c_str();
+			}
+		}
+
+		svclass.classID = pClass->m_ClassID;
+		Q_strncpy( svclass.datatablename, tblname, sizeof(svclass.datatablename) );
+		Q_strncpy( svclass.classname, netname, sizeof(svclass.classname) );
+
+		classinfomsg.m_Classes.AddToTail( svclass );  // add all known classes to message
+
+		++nClasses;
+	}
+
+	classinfomsg.m_nNumServerClasses = nClasses;
 }
+
+#include <inetchannel.h>
+
+SH_DECL_HOOK3(INetChannel, SendNetMsg, SH_NOATTRIB, 0, bool, INetMessage &, bool, bool);
+
+bool HookSendNetMsg(INetMessage &msg, bool bForceReliable, bool bVoice);
+
+DETOUR_DECL_STATIC2(DetourSV_WriteClassInfos, void, ServerClass *,pClasses, bf_write &,pBuf)
+{
+	SVC_ClassInfo &classinfomsg = *(SVC_ClassInfo *)alloca(sizeof(SVC_ClassInfo));
+	new (&classinfomsg.m_Classes) CUtlVector<SVC_ClassInfo::class_t>{};
+
+	classinfomsg.m_bCreateOnClient = false;
+
+	handle_classinfos(classinfomsg);
+
+	classinfomsg.WriteToBuffer_impl(pBuf);
+
+	classinfomsg.m_Classes.~CUtlVector<SVC_ClassInfo::class_t>();
+}
+
+DETOUR_DECL_STATIC1(DetourSV_ComputeClassInfosCRC, void, CRC32_t*, crc)
+{
+	for ( ServerClass *pClass=g_pServerClassHead; pClass && pClass != custom_server_head; pClass=pClass->m_pNext )
+	{
+		CRC32_ProcessBuffer( crc, (void *)pClass->m_pNetworkName, Q_strlen( pClass->m_pNetworkName ) );
+		CRC32_ProcessBuffer( crc, (void *)pClass->m_pTable->GetName(), Q_strlen(pClass->m_pTable->GetName() ) );
+	}
+
+	for ( ServerClass *pClass=custom_server_head; pClass; pClass=pClass->m_pNext )
+	{
+		const char *netname{pClass->m_pNetworkName};
+		const char *tblname{pClass->m_pTable->GetName()};
+
+		CRC32_ProcessBuffer( crc, (void *)netname, Q_strlen( netname ) );
+		CRC32_ProcessBuffer( crc, (void *)tblname, Q_strlen( tblname ) );
+	}
+}
+
+void DataTable_ClearWriteFlags_R( SendTable *pTable )
+{
+	pTable->SetWriteFlag( false );
+
+	for(int i=0; i < pTable->m_nProps; i++)
+	{
+		SendProp *pProp = &pTable->m_pProps[i];
+
+		if( pProp->m_Type == DPT_DataTable )
+		{
+			DataTable_ClearWriteFlags_R( pProp->GetDataTable() );
+		}
+	}
+}
+
+void DataTable_ClearWriteFlags( ServerClass *pClasses )
+{
+	for ( ServerClass *pCur=pClasses; pCur; pCur=pCur->m_pNext )
+	{
+		DataTable_ClearWriteFlags_R( pCur->m_pTable );
+	}
+}
+
+void *SV_MaybeWriteSendTablePtr{nullptr};
+
+static bool write_needs_decoder = false;
+
+#define PROPINFOBITS_NUMPROPS			10
+#define PROPINFOBITS_TYPE				5
+#define PROPINFOBITS_FLAGS				SPROP_NUMFLAGBITS_NETWORKED
+#define PROPINFOBITS_NUMBITS			7
+#define PROPINFOBITS_NUMELEMENTS		10	// For arrays.
 
 class SVC_SendTable : public CNetMessage
 {
@@ -4155,11 +4727,912 @@ public:
 	bf_write		m_DataOut;
 };
 
+char writeinfos_buf[4096 * 2];
+
+void SV_MaybeWriteSendTable( SendTable *pTable, bf_write &pBuf, bool bNeedDecoder )
+{
+	write_needs_decoder = bNeedDecoder;
+
+	(void_to_func<void(*)(SendTable *, bf_write &, bool)>(SV_MaybeWriteSendTablePtr))(pTable, pBuf, bNeedDecoder);
+}
+
+#if SOURCE_ENGINE == SE_TF2
+const char *CONDTABLE_NAME{nullptr};
+int CONDTABLE_LIMIT{-1};
+#endif
+
+DETOUR_DECL_STATIC2(DetourSendTable_WriteInfos, bool, SendTable *,pTable, bf_write *,pBuf)
+{
+	pBuf->StartWriting( writeinfos_buf, sizeof(writeinfos_buf) );
+
+	const char *tblname{pTable->GetName()};
+	if(curr_server_info) {
+		if(!curr_server_info->tbl_cl_name.empty()) {
+			tblname = curr_server_info->tbl_cl_name.c_str();
+		}
+	}
+
+#if SOURCE_ENGINE == SE_TF2
+	if(strcmp(pTable->GetName(), CONDTABLE_NAME) == 0) {
+		if(CONDTABLE_LIMIT > pTable->m_nProps) {
+			Host_Error( "SendTable_WriteInfos: condition table limit is larger than condition table itself %i vs %i.\n", CONDTABLE_LIMIT, pTable->m_nProps );
+		}
+	}
+
+	int numprops{pTable->m_nProps};
+	if(strcmp(pTable->GetName(), CONDTABLE_NAME) == 0) {
+		numprops = CONDTABLE_LIMIT;
+	}
+#else
+	int numprops{pTable->m_nProps};
+#endif
+
+	pBuf->WriteString( tblname );
+	pBuf->WriteUBitLong( numprops, PROPINFOBITS_NUMPROPS );
+
+	// Send each property.
+	for ( int iProp=0; iProp < pTable->m_nProps; iProp++ )
+	{
+		const SendProp *pProp = &pTable->m_pProps[iProp];
+
+	#if SOURCE_ENGINE == SE_TF2
+		if(strcmp(pTable->GetName(), CONDTABLE_NAME) == 0) {
+			if(iProp >= numprops) {
+				Warning( "SendTable_WriteInfos: skipped condition table prop %s (%i).\n", pProp->GetName(), iProp );
+				continue;
+			}
+		}
+	#endif
+
+		pBuf->WriteUBitLong( (unsigned int)pProp->m_Type, PROPINFOBITS_TYPE );
+		pBuf->WriteString( pProp->GetName() );
+		// we now have some flags that aren't networked so strip them off
+		unsigned int networkFlags = pProp->GetFlags() & ((1<<PROPINFOBITS_FLAGS)-1);
+		pBuf->WriteUBitLong( networkFlags, PROPINFOBITS_FLAGS );
+
+		if( pProp->m_Type == DPT_DataTable )
+		{
+			// Just write the name and it will be able to reuse the table with a matching name.
+			pBuf->WriteString( pProp->GetDataTable()->m_pNetTableName );
+		}
+		else
+		{
+			if ( pProp->IsExcludeProp() )
+			{
+				pBuf->WriteString( pProp->GetExcludeDTName() );
+			}
+			else if ( pProp->GetType() == DPT_Array )
+			{
+				pBuf->WriteUBitLong( pProp->GetNumElements(), PROPINFOBITS_NUMELEMENTS );
+			}
+			else
+			{
+				pBuf->WriteBitFloat( pProp->m_fLowValue );
+				pBuf->WriteBitFloat( pProp->m_fHighValue );
+				pBuf->WriteUBitLong( pProp->m_nBits, PROPINFOBITS_NUMBITS );
+			}
+		}
+
+		if(pBuf->IsOverflowed()) {
+			Host_Error( "SendTable_WriteInfos: overflow after writing %s %s.\n", pTable->GetName(), pProp->GetName() );
+		}
+	}
+
+	return !pBuf->IsOverflowed();
+}
+
+void SV_MaybeWriteSendTable_R( SendTable *pTable, bf_write &pBuf, bool root )
+{
+	bool root_custom = (root && curr_server_info);
+
+	if(!root) {
+		curr_server_info = nullptr;
+	}
+
+	SV_MaybeWriteSendTable( pTable, pBuf, false );
+
+	// Make sure we send child send tables..
+	for(int i=0; i < pTable->m_nProps; i++)
+	{
+		SendProp *pProp = &pTable->m_pProps[i];
+
+		if( pProp->m_Type == DPT_DataTable ) {
+			SV_MaybeWriteSendTable_R( pProp->GetDataTable(), pBuf, false );
+		}
+	}
+}
+
+DETOUR_DECL_STATIC2(DetourSV_WriteSendTables, void, ServerClass *,pClasses, bf_write &,pBuf)
+{
+	ServerClass *pCur;
+
+	DataTable_ClearWriteFlags( pClasses );
+
+	// First, we send all the leaf classes. These are the ones that will need decoders
+	// on the client.
+	for ( pCur=pClasses; pCur; pCur=pCur->m_pNext )
+	{
+		auto it{server_ptr_map.find(pCur)};
+		if(it != server_ptr_map.end()) {
+			serverclass_override_t &overr{*it->second};
+			curr_server_info = &overr;
+		} else {
+			curr_server_info = nullptr;
+		}
+
+		SV_MaybeWriteSendTable( pCur->m_pTable, pBuf, true );
+	}
+
+	// Now, we send their base classes. These don't need decoders on the client
+	// because we will never send these SendTables by themselves.
+	for ( pCur=pClasses; pCur; pCur=pCur->m_pNext )
+	{
+		auto it{server_ptr_map.find(pCur)};
+		if(it != server_ptr_map.end()) {
+			serverclass_override_t &overr{*it->second};
+			curr_server_info = &overr;
+		} else {
+			curr_server_info = nullptr;
+		}
+
+		SV_MaybeWriteSendTable_R( pCur->m_pTable, pBuf, true );
+	}
+
+	curr_server_info = nullptr;
+}
+
+#include <tier0/icommandline.h>
+
+static CDetour *CBaseServer_WriteDeltaEntities_detour{nullptr};
+
+std::unordered_map<ServerClass *, int> old_classids{};
+
+void Sample::pre_write_deltas() const noexcept
+{
+	if(sv_sendtables->GetInt() == 0) {
+		for ( ServerClass *pCur=custom_server_head; pCur; pCur=pCur->m_pNext )
+		{
+			auto it{server_ptr_map.find(pCur)};
+			if(it != server_ptr_map.end()) {
+				serverclass_override_t &overr{*it->second};
+				old_classids.emplace(pCur, pCur->m_ClassID);
+				pCur->m_ClassID = overr.cl_classid;
+			}
+		}
+	}
+}
+
+void Sample::post_write_deltas() const noexcept
+{
+	for(auto it : old_classids) {
+		it.first->m_ClassID = it.second;
+	}
+	old_classids.clear();
+}
+
+void *SendTable_EncodePtr{nullptr};
+
+bool SendTable_Encode(const SendTable *pTable, const void *pStruct, bf_write *pOut, int objectID, CUtlMemory<CSendProxyRecipients> *pRecipients, bool bNonZeroOnly)
+{
+	return (void_to_func<bool(*)(const SendTable *, const void *, bf_write *, int, CUtlMemory<CSendProxyRecipients> *, bool)>(SendTable_EncodePtr))(pTable, pStruct, pOut, objectID, pRecipients, bNonZeroOnly);
+}
+
+static void add_baseline_for_class(ServerClass *pClass, int entnum)
+{
+	if(pClass->m_InstanceBaselineIndex != INVALID_STRING_INDEX) {
+		return;
+	}
+
+	SendTable *pSendTable = pClass->m_pTable;
+
+	edict_t *edict = gamehelpers->EdictOfIndex(entnum);
+
+	ALIGN4 char packedData[MAX_PACKEDENTITY_DATA] ALIGN4_POST;
+	bf_write writeBuf( "SV_CreateBaseline->writeBuf", packedData, sizeof( packedData ) );
+
+	// create basline from zero values
+	if ( !SendTable_Encode(
+		pSendTable,
+		edict->GetUnknown(),
+		&writeBuf,
+		entnum,
+		NULL,
+		false
+		) )
+	{
+		Host_Error("SV_CreateBaseline: SendTable_Encode returned false (ent %d).\n", entnum);
+	}
+
+	// copy baseline into baseline stringtable
+	char idString[32];
+	Q_snprintf( idString, sizeof( idString ), "%d", pClass->m_ClassID );
+
+	m_pInstanceBaselineTable->AddString(true, idString, writeBuf.GetNumBytesWritten(), packedData);
+}
+
+DETOUR_DECL_STATIC4(DetourSV_EnsureInstanceBaseline, void, ServerClass *,pServerClass, int, iEdict, const void *,pData, int, nBytes)
+{
+	ServerClass *pClass = gamehelpers->EdictOfIndex(iEdict)->GetNetworkable()->GetServerClass();
+
+	if(sv_sendtables->GetInt() == 0) {
+		auto it{server_ptr_map.find(pClass)};
+		if(it != server_ptr_map.end()) {
+			serverclass_override_t &overr{*it->second};
+			if(overr.classid_cls) {
+				add_baseline_for_class(overr.classid_cls, iEdict);
+			} else if(overr.realcls) {
+				add_baseline_for_class(overr.realcls, iEdict);
+			}
+		}
+	}
+
+	DETOUR_STATIC_CALL(DetourSV_EnsureInstanceBaseline)(pServerClass, iEdict, pData, nBytes);
+}
+
+DETOUR_DECL_MEMBER0(DetourCGameServerAssignClassIds, void)
+{
+	bool bSpew = CommandLine()->FindParm( "-netspike" ) != 0;
+
+	int nClasses = 0;
+
+	classid_last = 0;
+	for ( ServerClass *pClass=g_pServerClassHead; pClass && pClass != custom_server_head; pClass=pClass->m_pNext )
+	{
+		pClass->m_ClassID = classid_last++;
+
+		baselinemap[pClass->m_ClassID] = pClass;
+
+		++nClasses;
+
+		if ( bSpew )
+		{
+			Msg( "%d == '%s'\n", pClass->m_ClassID, pClass->GetName() );
+		}
+	}
+
+	def_classid_last = classid_last;
+
+	for ( ServerClass *pClass=custom_server_head; pClass; pClass=pClass->m_pNext )
+	{
+		pClass->m_ClassID = classid_last++;
+
+		baselinemap[pClass->m_ClassID] = pClass;
+
+		++nClasses;
+
+		auto it{server_ptr_map.find(pClass)};
+		if(it != server_ptr_map.end()) {
+			serverclass_override_t &overr{*it->second};
+			overr.classid = pClass->m_ClassID;
+			if(overr.classid_cls) {
+				overr.cl_classid = overr.classid_cls->m_ClassID;
+			} else if(overr.realcls) {
+				overr.cl_classid = overr.realcls->m_ClassID;
+			}
+		}
+	}
+
+	((CBaseServer *)this)->serverclasses = nClasses;
+	((CBaseServer *)this)->serverclassbits = Q_log2( nClasses ) + 1;
+
+	classids_assigned = true;
+}
+
+void serverclass_override_t::init_classid()
+{
+	if(classids_assigned) {
+		((CBaseServer *)server)->increment_svclasses();
+
+		cls.m_ClassID = classid_last++;
+		classid = cls.m_ClassID;
+
+		baselinemap[cls.m_ClassID] = (ServerClass *)&cls;
+	} else {
+		cls.m_ClassID = -1;
+	}
+}
+
+void serverclass_override_t::override_with(ServerClass *netclass)
+{
+	classid_cls = netclass;
+
+	cl_classid = classid_cls->m_ClassID;
+}
+
+void serverclass_override_t::init()
+{
+	props[0].SetDataTable(realcls->m_pTable);
+
+	if(tbl_name.empty()) {
+		tbl_name = realcls->m_pTable->m_pNetTableName;
+		tbl_name += "_custom_";
+		tbl_name += std::to_string(counterid);
+	}
+	tbl.set_name(tbl_name);
+
+	if(cls_name.empty()) {
+		cls_name = realcls->m_pNetworkName;
+		cls_name += "_custom_";
+		cls_name += std::to_string(counterid);
+	}
+	cls.set_name(cls_name);
+
+	if(!classid_cls) {
+		cl_classid = realcls->m_ClassID;
+	}
+}
+
+void serverclass_override_t::term_datatable()
+{
+	g_SendTables->FindAndRemove(&tbl);
+
+	SendTable_TermTable(&tbl);
+
+	for(custom_SendProp &prop : props) {
+		prop.clear_name();
+	}
+
+	tbl.clear_name();
+
+	*g_SendTableCRC = SendTable_ComputeCRC();
+}
+
+template< class TableType, class PropType >
+void SetupArrayProps_R( TableType *pTable )
+{
+	// If this table has already been initialized in here, then jump out.
+	if ( pTable->IsInitialized() )
+		return;
+
+	pTable->SetInitialized( true );
+
+	for ( int i=0; i < pTable->GetNumProps(); i++ )
+	{
+		PropType *pProp = pTable->GetProp( i );
+
+		if ( pProp->GetType() == DPT_Array )
+		{
+			// Get the property defining the elements in the array.
+			PropType *pArrayProp = pTable->GetProp( i-1 );
+			pArrayProp->SetInsideArray();
+			pProp->SetArrayProp( pArrayProp );
+		}
+		else if ( pProp->GetType() == DPT_DataTable )
+		{
+			// Recurse into children datatables.
+			SetupArrayProps_R<TableType,PropType>( pProp->GetDataTable() );
+		}
+	}
+}
+
+class ExcludeProp
+{
+public:
+	char const	*m_pTableName;
+	char const	*m_pPropName;
+};
+
+static bool SendTable_GetPropsExcluded( const SendTable *pTable, ExcludeProp *pExcludeProps, int &nExcludeProps, int nMaxExcludeProps )
+{
+	for(int i=0; i < pTable->m_nProps; i++)
+	{
+		SendProp *pProp = &pTable->m_pProps[i];
+
+		if ( pProp->IsExcludeProp() )
+		{
+			char const *pName = pProp->GetExcludeDTName();
+
+			pExcludeProps[nExcludeProps].m_pTableName = pName;
+			pExcludeProps[nExcludeProps].m_pPropName = pProp->GetName();
+			nExcludeProps++;
+		}
+		else if ( pProp->GetDataTable() )
+		{
+			if( !SendTable_GetPropsExcluded( pProp->GetDataTable(), pExcludeProps, nExcludeProps, nMaxExcludeProps ) )
+				return false;
+		}
+	}
+
+	return true;
+}
+
+#define PROPINDEX_NUMBITS 12
+#define MAX_TOTAL_SENDTABLE_PROPS	(1 << PROPINDEX_NUMBITS)
+
+class CBuildHierarchyStruct
+{
+public:
+	const ExcludeProp	*m_pExcludeProps;
+	int					m_nExcludeProps;
+
+	const SendProp		*m_pDatatableProps[MAX_TOTAL_SENDTABLE_PROPS];
+	int					m_nDatatableProps;
+	
+	const SendProp		*m_pProps[MAX_TOTAL_SENDTABLE_PROPS];
+	unsigned char		m_PropProxyIndices[MAX_TOTAL_SENDTABLE_PROPS];
+	int					m_nProps;
+
+	unsigned char m_nPropProxies;
+};
+
+void SendTable_BuildHierarchy( 
+	CSendNode *pNode,
+	const SendTable *pTable, 
+	CBuildHierarchyStruct *bhs
+	);
+
+const ExcludeProp* FindExcludeProp(
+	char const *pTableName,
+	char const *pPropName,
+	const ExcludeProp *pExcludeProps, 
+	int nExcludeProps)
+{
+	for ( int i=0; i < nExcludeProps; i++ )
+	{
+		if ( stricmp(pExcludeProps[i].m_pTableName, pTableName) == 0 && stricmp(pExcludeProps[i].m_pPropName, pPropName ) == 0 )
+			return &pExcludeProps[i];
+	}
+
+	return NULL;
+}
+
+void SendTable_BuildHierarchy_IterateProps(
+	CSendNode *pNode,
+	const SendTable *pTable, 
+	CBuildHierarchyStruct *bhs,
+	const SendProp *pNonDatatableProps[MAX_TOTAL_SENDTABLE_PROPS],
+	int &nNonDatatableProps )
+{
+	int i;
+	for ( i=0; i < pTable->m_nProps; i++ )
+	{
+		const SendProp *pProp = &pTable->m_pProps[i];
+
+		if ( pProp->IsExcludeProp() || 
+			pProp->IsInsideArray() || 
+			FindExcludeProp( pTable->GetName(), pProp->GetName(), bhs->m_pExcludeProps, bhs->m_nExcludeProps ) )
+		{
+			continue;
+		}
+
+		if ( pProp->GetType() == DPT_DataTable )
+		{
+			if ( pProp->GetFlags() & SPROP_COLLAPSIBLE )
+			{
+				// This is a base class.. no need to make a new CSendNode (and trigger a bunch of
+				// unnecessary send proxy calls in the datatable stacks).
+				SendTable_BuildHierarchy_IterateProps( 
+					pNode,
+					pProp->GetDataTable(), 
+					bhs, 
+					pNonDatatableProps, 
+					nNonDatatableProps );
+			}
+			else
+			{
+				// Setup a child datatable reference.
+				CSendNode *pChild = new CSendNode;
+
+				// Setup a datatable prop for this node to reference (so the recursion
+				// routines can get at the proxy).
+				if ( bhs->m_nDatatableProps >= ARRAYSIZE( bhs->m_pDatatableProps ) )
+					Error( "Overflowed datatable prop list in SendTable '%s'.", pTable->GetName() );
+				
+				bhs->m_pDatatableProps[bhs->m_nDatatableProps] = pProp;
+				pChild->m_iDatatableProp = bhs->m_nDatatableProps;
+				++bhs->m_nDatatableProps;
+
+				pNode->m_Children.AddToTail( pChild );
+
+				// Recurse into the new child datatable.
+				SendTable_BuildHierarchy( pChild, pProp->GetDataTable(), bhs );
+			}
+		}
+		else
+		{
+			if ( nNonDatatableProps >= MAX_TOTAL_SENDTABLE_PROPS )
+				Error( "SendTable_BuildHierarchy: overflowed non-datatable props with '%s'.", pProp->GetName() );
+			
+			pNonDatatableProps[nNonDatatableProps] = pProp;
+			++nNonDatatableProps;
+		}
+	}
+}
+
+void SendTable_BuildHierarchy( 
+	CSendNode *pNode,
+	const SendTable *pTable, 
+	CBuildHierarchyStruct *bhs
+	)
+{
+	pNode->m_pTable = pTable;
+	pNode->m_iFirstRecursiveProp = bhs->m_nProps;
+	
+	unsigned char curPropProxy = bhs->m_nPropProxies;
+	++bhs->m_nPropProxies;
+
+	const SendProp *pNonDatatableProps[MAX_TOTAL_SENDTABLE_PROPS];
+	int nNonDatatableProps = 0;
+	
+	// First add all the child datatables.
+	SendTable_BuildHierarchy_IterateProps(
+		pNode,
+		pTable,
+		bhs,
+		pNonDatatableProps,
+		nNonDatatableProps );
+
+	// Now add the properties.
+
+	for ( int i=0; i < nNonDatatableProps; i++ )
+	{
+		bhs->m_pProps[bhs->m_nProps] = pNonDatatableProps[i];
+		bhs->m_PropProxyIndices[bhs->m_nProps] = curPropProxy;
+		++bhs->m_nProps;
+	}
+
+	pNode->m_nRecursiveProps = bhs->m_nProps - pNode->m_iFirstRecursiveProp;
+}
+
+void SendTable_SortByPriority(CBuildHierarchyStruct *bhs)
+{
+	int i, start = 0;
+
+	while( true )
+	{
+		for ( i = start; i < bhs->m_nProps; i++ )
+		{
+			const SendProp *p = bhs->m_pProps[i];
+			unsigned char c = bhs->m_PropProxyIndices[i];
+
+			if ( p->GetFlags() & SPROP_CHANGES_OFTEN )
+			{
+				bhs->m_pProps[i] = bhs->m_pProps[start];
+				bhs->m_PropProxyIndices[i] = bhs->m_PropProxyIndices[start];
+				bhs->m_pProps[start] = p;
+				bhs->m_PropProxyIndices[start] = c;
+				start++;
+				break;
+			}
+		}
+
+		if ( i == bhs->m_nProps )
+			return; 
+	}
+}
+
+static void SetDataTableProxyIndices_R( 
+	CSendTablePrecalc *pMainTable, 
+	CSendNode *pCurTable,
+	CBuildHierarchyStruct *bhs )
+{
+	for ( int i=0; i < pCurTable->GetNumChildren(); i++ )
+	{
+		CSendNode *pNode = pCurTable->GetChild( i );
+		const SendProp *pProp = bhs->m_pDatatableProps[pNode->m_iDatatableProp];
+
+		if ( pProp->GetFlags() & SPROP_PROXY_ALWAYS_YES )
+		{
+			pNode->SetDataTableProxyIndex( DATATABLE_PROXY_INDEX_NOPROXY );
+		}
+		else
+		{
+			pNode->SetDataTableProxyIndex( pMainTable->GetNumDataTableProxies() );
+			pMainTable->SetNumDataTableProxies( pMainTable->GetNumDataTableProxies() + 1 );
+		}
+
+		SetDataTableProxyIndices_R( pMainTable, pNode, bhs );
+	}
+}
+
+static void SetRecursiveProxyIndices_R( 
+	SendTable *pBaseTable,
+	CSendNode *pCurTable,
+	int &iCurProxyIndex )
+{
+	if ( iCurProxyIndex >= MAX_PROXY_RESULTS )
+		Error( "Too many proxies for datatable %s.", pBaseTable->GetName() );
+
+	pCurTable->SetRecursiveProxyIndex( iCurProxyIndex );
+	iCurProxyIndex++;
+	
+	for ( int i=0; i < pCurTable->GetNumChildren(); i++ )
+	{
+		CSendNode *pNode = pCurTable->GetChild( i );
+		SetRecursiveProxyIndices_R( pBaseTable, pNode, iCurProxyIndex );
+	}
+}
+
+void CalcPathLengths_R( CSendNode *pNode, CUtlVector<int> &pathLengths, int curPathLength, int &totalPathLengths )
+{
+	pathLengths[pNode->GetRecursiveProxyIndex()] = curPathLength;
+	totalPathLengths += curPathLength;
+	
+	for ( int i=0; i < pNode->GetNumChildren(); i++ )
+	{
+		CalcPathLengths_R( pNode->GetChild( i ), pathLengths, curPathLength+1, totalPathLengths );
+	}
+}
+
+void FillPathEntries_R( CSendTablePrecalc *pPrecalc, CSendNode *pNode, CSendNode *pParent, int &iCurEntry )
+{
+	// Fill in this node's path.
+	CSendTablePrecalc::CProxyPath &outProxyPath = pPrecalc->m_ProxyPaths[ pNode->GetRecursiveProxyIndex() ];
+	outProxyPath.m_iFirstEntry = (unsigned short)iCurEntry;
+
+	// Copy all the proxies leading to the parent.
+	if ( pParent )
+	{
+		CSendTablePrecalc::CProxyPath &parentProxyPath = pPrecalc->m_ProxyPaths[pParent->GetRecursiveProxyIndex()];
+		outProxyPath.m_nEntries = parentProxyPath.m_nEntries + 1;
+
+		for ( int i=0; i < parentProxyPath.m_nEntries; i++ )
+			pPrecalc->m_ProxyPathEntries[iCurEntry++] = pPrecalc->m_ProxyPathEntries[parentProxyPath.m_iFirstEntry+i];
+		
+		// Now add this node's own proxy.
+		pPrecalc->m_ProxyPathEntries[iCurEntry].m_iProxy = pNode->GetRecursiveProxyIndex();
+		pPrecalc->m_ProxyPathEntries[iCurEntry].m_iDatatableProp = pNode->m_iDatatableProp;
+		++iCurEntry;
+	}
+	else
+	{
+		outProxyPath.m_nEntries = 0;
+	}
+
+	for ( int i=0; i < pNode->GetNumChildren(); i++ )
+	{
+		FillPathEntries_R( pPrecalc, pNode->GetChild( i ), pNode, iCurEntry );
+	}
+}
+
+void SendTable_GenerateProxyPaths( CSendTablePrecalc *pPrecalc, int nProxyIndices )
+{
+	// Initialize the array.
+	pPrecalc->m_ProxyPaths.SetSize( nProxyIndices );
+	for ( int i=0; i < nProxyIndices; i++ )
+		pPrecalc->m_ProxyPaths[i].m_iFirstEntry = pPrecalc->m_ProxyPaths[i].m_nEntries = 0xFFFF;
+	
+	// Figure out how long the path down the tree is to each node.
+	int totalPathLengths = 0;
+	CUtlVector<int> pathLengths;
+	pathLengths.SetSize( nProxyIndices );
+	memset( pathLengths.Base(), 0, sizeof( pathLengths[0] ) * nProxyIndices );
+	CalcPathLengths_R( pPrecalc->GetRootNode(), pathLengths, 0, totalPathLengths );
+	
+	// 
+	int iCurEntry = 0;
+	pPrecalc->m_ProxyPathEntries.SetSize( totalPathLengths );
+	FillPathEntries_R( pPrecalc, pPrecalc->GetRootNode(), NULL, iCurEntry );
+}
+
+bool CSendTablePrecalc::SetupFlatPropertyArray()
+{
+	SendTable *pTable = GetSendTable();
+
+	// First go through and set SPROP_INSIDEARRAY when appropriate, and set array prop pointers.
+	SetupArrayProps_R<SendTable, SendTable::PropType>( pTable );
+
+	// Make a list of which properties are excluded.
+	ExcludeProp excludeProps[MAX_EXCLUDE_PROPS];
+	int nExcludeProps = 0;
+	if( !SendTable_GetPropsExcluded( pTable, excludeProps, nExcludeProps, MAX_EXCLUDE_PROPS ) )
+		return false;
+
+	// Now build the hierarchy.
+	CBuildHierarchyStruct bhs;
+	bhs.m_pExcludeProps = excludeProps;
+	bhs.m_nExcludeProps = nExcludeProps;
+	bhs.m_nProps = bhs.m_nDatatableProps = 0;
+	bhs.m_nPropProxies = 0;
+	SendTable_BuildHierarchy( GetRootNode(), pTable, &bhs );
+
+	SendTable_SortByPriority( &bhs );
+	
+	// Copy the SendProp pointers into the precalc.	
+	MEM_ALLOC_CREDIT();
+	m_Props.CopyArray( bhs.m_pProps, bhs.m_nProps );
+	m_DatatableProps.CopyArray( bhs.m_pDatatableProps, bhs.m_nDatatableProps );
+	m_PropProxyIndices.CopyArray( bhs.m_PropProxyIndices, bhs.m_nProps );
+
+	// Assign the datatable proxy indices.
+	SetNumDataTableProxies( 0 );
+	SetDataTableProxyIndices_R( this, GetRootNode(), &bhs );
+	
+	int nProxyIndices = 0;
+	SetRecursiveProxyIndices_R( pTable, GetRootNode(), nProxyIndices );
+
+	SendTable_GenerateProxyPaths( this, nProxyIndices );
+	return true;
+}
+
+static bool SendTable_InitTable( SendTable *pTable )
+{
+	if( pTable->m_pPrecalc )
+		return true;
+	
+	// Create the CSendTablePrecalc.
+	CSendTablePrecalc *pPrecalc = (CSendTablePrecalc *)calloc(1, sizeof(CSendTablePrecalc));
+	call_mfunc<void, CSendTablePrecalc>(pPrecalc, CSendTablePrecalcCTOR);
+
+	pPrecalc->m_pSendTable = pTable;
+	pTable->m_pPrecalc = pPrecalc;
+
+	SendTable_CalcNextVectorElems( pTable );
+
+	// Bind the instrumentation if -dti was specified.
+	pPrecalc->m_pDTITable = ServerDTI_HookTable( pTable );
+
+	// Setup its flat property array.
+	bool ret = pPrecalc->SetupFlatPropertyArray();
+	if ( !ret )
+		return false;
+
+	SendTable_Validate( pPrecalc );
+	return true;
+}
+
+void serverclass_override_t::setup_datatable()
+{
+	curr_server_info = this;
+	SendTable_InitTable(&tbl);
+	curr_server_info = nullptr;
+
+	g_SendTables->AddToTail(&tbl);
+
+	*g_SendTableCRC = SendTable_ComputeCRC();
+}
+
+static void dump_classinfo(SVC_ClassInfo &classinfomsg)
+{
+	printf("\nm_bCreateOnClient == %i\n", classinfomsg.m_bCreateOnClient);
+	printf("m_Classes == %i\n", classinfomsg.m_Classes.Count());
+	printf("m_nNumServerClasses == %i\n", classinfomsg.m_nNumServerClasses);
+	for(int i = 0; i < classinfomsg.m_Classes.Count(); ++i) {
+		SVC_ClassInfo::class_t &svclass{classinfomsg.m_Classes[i]};
+		printf("  %i = %s - %s\n", i, svclass.classname, svclass.datatablename);
+	}
+}
+
+bf_write			m_FullSendTables;
+CUtlMemory<byte>	m_FullSendTablesBuffer;
+
+DETOUR_DECL_STATIC0(SV_CreateBaseline, void)
+{
+	if(sv_sendtables->GetInt() == 1 ||
+		sv_sendtables->GetInt() == 2) {
+		sv_sendtables->SetValue(3);
+	}
+
+	if(sv_sendtables->GetInt() == 3) {
+		ServerClass *pClasses = g_pServerClassHead;
+
+		m_FullSendTablesBuffer.EnsureCapacity( NET_MAX_PAYLOAD );
+		m_FullSendTables.StartWriting( m_FullSendTablesBuffer.Base(), m_FullSendTablesBuffer.Count() );
+
+		DetourSV_WriteSendTables( pClasses, m_FullSendTables );
+
+		if ( m_FullSendTables.IsOverflowed() )
+		{
+			Host_Error("SV_CreateBaseline: WriteSendTables overflow.\n" );
+			return;
+		}
+
+		// Send class descriptions.
+		DetourSV_WriteClassInfos(pClasses, m_FullSendTables);
+
+		if ( m_FullSendTables.IsOverflowed() )
+		{
+			Host_Error("SV_CreateBaseline: WriteClassInfos overflow.\n" );
+			return;
+		}
+	}
+
+	bool always_send = (sv_sendtables->GetInt() == 3);
+	if(always_send) {
+		sv_sendtables->SetValue(0);
+	}
+
+	DETOUR_STATIC_CALL(SV_CreateBaseline)();
+
+	if(always_send) {
+		sv_sendtables->SetValue(3);
+	}
+}
+
+bool sendfulltables{false};
+
+bool HookSendNetMsg(INetMessage &msg, bool bForceReliable, bool bVoice)
+{
+	if(msg.GetType() != svc_ClassInfo) {
+		RETURN_META_VALUE(MRES_IGNORED, false);
+	}
+
+	INetChannel *netchan = META_IFACEPTR(INetChannel);
+
+	SVC_ClassInfo &classinfomsg = (SVC_ClassInfo &)msg;
+
+	if(sendfulltables) {
+		if ( m_FullSendTables.IsOverflowed() )
+		{
+			Host_Error( "Send Table signon buffer overflowed %i bytes!!!\n", m_FullSendTables.GetNumBytesWritten() );
+			return false;
+		}
+
+		bool ret = netchan->SendData( m_FullSendTables );
+
+		RETURN_META_VALUE(MRES_SUPERCEDE, ret);
+	} else {
+		RETURN_META_VALUE(MRES_HANDLED, false);
+	}
+}
+
+DETOUR_DECL_MEMBER0(DetourCGameClientSendSignonData, bool)
+{
+	CGameClient *pThis = (CGameClient *)this;
+
+	INetChannel *netchan = pThis->GetNetChannel();
+
+	bool always_send = (sv_sendtables->GetInt() == 3);
+
+	int hid = SH_ADD_HOOK(INetChannel, SendNetMsg, netchan, SH_STATIC(HookSendNetMsg), false);
+
+	if(always_send) {
+		sv_sendtables->SetValue(0);
+		sendfulltables = true;
+	}
+
+	in_send_signondata = true;
+	bool ret = DETOUR_MEMBER_CALL(DetourCGameClientSendSignonData)();
+	in_send_signondata = false;
+
+	sendfulltables = false;
+
+	if(always_send) {
+		sv_sendtables->SetValue(3);
+	}
+
+	SH_REMOVE_HOOK_ID(hid);
+
+	return ret;
+}
+
+CRC32_t invalid_crc;
+CRC32_t original_crc;
+
+DETOUR_DECL_STATIC0(SendTable_GetCRC, CRC32_t)
+{
+	if(in_send_signondata) {
+		switch(sv_sendtables->GetInt()) {
+			case 2: return invalid_crc;
+			case 0: return original_crc;
+		}
+	}
+
+	return DETOUR_STATIC_CALL(SendTable_GetCRC)();
+}
+
 #define Bits2Bytes(b) ((b+7)>>3)
+
+CDetour *SV_WriteClassInfos_detour{nullptr};
+CDetour *SV_ComputeClassInfosCRC_detour{nullptr};
+CDetour *SV_WriteSendTables_detour{nullptr};
+CDetour *SendTable_WriteInfos_detour{nullptr};
 
 bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 {
 	if(!gameconfs->LoadGameConfigFile("datamaps", &g_pGameConf, error, maxlen)) {
+		return false;
+	}
+
+	CONDTABLE_NAME = g_pGameConf->GetKeyValue("CONDTABLE_NAME");
+	if(CONDTABLE_NAME == nullptr) {
+		snprintf(error, maxlen, "could not get CONDTABLE_NAME key");
+		return false;
+	}
+
+	const char *CONDTABLE_LIMIT_key = g_pGameConf->GetKeyValue("CONDTABLE_LIMIT");
+	if(CONDTABLE_LIMIT_key == nullptr) {
+		snprintf(error, maxlen, "could not get CONDTABLE_LIMIT key");
 		return false;
 	}
 
@@ -4212,19 +5685,67 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 		return false;
 	}
 
-	g_pGameConf->GetMemSig("SV_WriteSendTables", (void **)&SV_WriteSendTablesPtr);
-	if(SV_WriteSendTablesPtr == nullptr) {
-		snprintf(error, maxlen, "could not get SV_WriteSendTables address");
+	g_pGameConf->GetMemSig("g_SendTables", (void **)&g_SendTables);
+	if(g_SendTables == nullptr) {
+		snprintf(error, maxlen, "could not get g_SendTables address");
 		return false;
 	}
 
-	g_pGameConf->GetMemSig("SV_WriteClassInfos", (void **)&SV_WriteClassInfosPtr);
-	if(SV_WriteClassInfosPtr == nullptr) {
-		snprintf(error, maxlen, "could not get SV_WriteClassInfos address");
+	g_pGameConf->GetMemSig("SV_MaybeWriteSendTable", &SV_MaybeWriteSendTablePtr);
+	if(SV_MaybeWriteSendTablePtr == nullptr) {
+		snprintf(error, maxlen, "could not get SV_MaybeWriteSendTable address");
+		return false;
+	}
+
+	g_pGameConf->GetMemSig("CSendTablePrecalc::CSendTablePrecalc", &CSendTablePrecalcCTOR);
+	if(CSendTablePrecalcCTOR == nullptr) {
+		snprintf(error, maxlen, "could not get CSendTablePrecalc::CSendTablePrecalc address");
+		return false;
+	}
+
+	g_pGameConf->GetMemSig("ServerDTI_HookTable", &ServerDTI_HookTablePtr);
+	if(ServerDTI_HookTablePtr == nullptr) {
+		snprintf(error, maxlen, "could not get ServerDTI_HookTable address");
+		return false;
+	}
+
+	g_pGameConf->GetMemSig("SendTable_Encode", &SendTable_EncodePtr);
+	if(SendTable_EncodePtr == nullptr) {
+		snprintf(error, maxlen, "could not get SendTable_Encode address");
 		return false;
 	}
 
 	CDetourManager::Init(g_pSM->GetScriptingEngine(), g_pGameConf);
+
+	SV_EnsureInstanceBaseline_detour = DETOUR_CREATE_STATIC(DetourSV_EnsureInstanceBaseline, "SV_EnsureInstanceBaseline");
+	if(!SV_EnsureInstanceBaseline_detour) {
+		snprintf(error, maxlen, "could not create SV_EnsureInstanceBaseline detour");
+		return false;
+	}
+
+	SV_WriteSendTables_detour = DETOUR_CREATE_STATIC(DetourSV_WriteSendTables, "SV_WriteSendTables");
+	if(!SV_WriteSendTables_detour) {
+		snprintf(error, maxlen, "could not create SV_WriteSendTables detour");
+		return false;
+	}
+
+	SendTable_WriteInfos_detour = DETOUR_CREATE_STATIC(DetourSendTable_WriteInfos, "SendTable_WriteInfos");
+	if(!SendTable_WriteInfos_detour) {
+		snprintf(error, maxlen, "could not create SendTable_WriteInfos detour");
+		return false;
+	}
+
+	SV_WriteClassInfos_detour = DETOUR_CREATE_STATIC(DetourSV_WriteClassInfos, "SV_WriteClassInfos");
+	if(!SV_WriteClassInfos_detour) {
+		snprintf(error, maxlen, "could not create SV_WriteClassInfos detour");
+		return false;
+	}
+
+	SV_ComputeClassInfosCRC_detour = DETOUR_CREATE_STATIC(DetourSV_ComputeClassInfosCRC, "SV_ComputeClassInfosCRC");
+	if(!SV_ComputeClassInfosCRC_detour) {
+		snprintf(error, maxlen, "could not create SV_ComputeClassInfosCRC detour");
+		return false;
+	}
 
 	SV_ComputeClientPacks_detour = DETOUR_CREATE_STATIC(SV_ComputeClientPacks, "SV_ComputeClientPacks");
 	if(!SV_ComputeClientPacks_detour) {
@@ -4256,12 +5777,6 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 		return false;
 	}
 
-	pSVC_ClassInfoWriteToBuffer = DETOUR_CREATE_MEMBER(DetourSVC_ClassInfoWriteToBuffer, "SVC_ClassInfo::WriteToBuffer")
-	if(!pSVC_ClassInfoWriteToBuffer) {
-		snprintf(error, maxlen, "could not create SVC_ClassInfo::WriteToBuffer detour");
-		return false;
-	}
-
 	pPhysicsRunSpecificThink = DETOUR_CREATE_MEMBER(PhysicsRunSpecificThink, "CBaseEntity::PhysicsRunSpecificThink")
 	if(!pPhysicsRunSpecificThink) {
 		snprintf(error, maxlen, "could not create CBaseEntity::PhysicsRunSpecificThink detour");
@@ -4269,18 +5784,38 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	}
 
 	pCGameServerAssignClassIds->EnableDetour();
-	SV_CreateBaseline_detour->EnableDetour();
 	SendTable_GetCRC_detour->EnableDetour();
 	pCGameClientSendSignonData->EnableDetour();
-	pSVC_ClassInfoWriteToBuffer->EnableDetour();
 	pPhysicsRunSpecificThink->EnableDetour();
+	SV_ComputeClassInfosCRC_detour->EnableDetour();
+	SV_WriteClassInfos_detour->EnableDetour();
+	SV_WriteSendTables_detour->EnableDetour();
+	SendTable_WriteInfos_detour->EnableDetour();
+	SV_CreateBaseline_detour->EnableDetour();
+	SV_EnsureInstanceBaseline_detour->EnableDetour();
+
+#if SOURCE_ENGINE == SE_TF2
+	{
+		void **vtable = *(void ***)server;
+		int index = vfunc_index(&CBaseServer::WriteDeltaEntities);
+		CBaseServer_WriteDeltaEntities_detour = DETOUR_CREATE_MEMBER(CBaseServer_WriteDeltaEntities, vtable[index]);
+	}
+#endif
 
 #ifdef SOURCEHOOK_BEING_STUPID
-	void **vtable = *(void ***)engine;
-	int index = vfunc_index(&IVEngineServer::PvAllocEntPrivateData);
-	pPvAllocEntPrivateData = DETOUR_CREATE_MEMBER(DetourPvAllocEntPrivateData, vtable[index])
-	pPvAllocEntPrivateData->EnableDetour();
+	{
+		void **vtable = *(void ***)engine;
+		int index = vfunc_index(&IVEngineServer::PvAllocEntPrivateData);
+		pPvAllocEntPrivateData = DETOUR_CREATE_MEMBER(DetourPvAllocEntPrivateData, vtable[index])
+		pPvAllocEntPrivateData->EnableDetour();
+	}
 #endif
+
+	original_crc = *g_SendTableCRC;
+
+	invalid_crc = CRC32_ProcessSingleBuffer("no", 3);
+
+	CONDTABLE_LIMIT = V_atoi(CONDTABLE_LIMIT_key);
 
 	SH_MANUALHOOK_RECONFIGURE(UpdateOnRemove, CBaseEntityUpdateOnRemove, 0, 0);
 
@@ -4316,16 +5851,26 @@ void Sample::SDK_OnUnload()
 	SH_REMOVE_HOOK(CGlobalEntityList, OnAddEntity, ((CGlobalEntityList *)g_pEntityList), SH_MEMBER(((CGlobalEntityListHack *)g_pEntityList), &CGlobalEntityListHack::HookOnAddEntity), false);
 
 	SendTable_GetCRC_detour->Destroy();
-	SV_CreateBaseline_detour->Destroy();
-	pSVC_ClassInfoWriteToBuffer->Destroy();
 	pCGameClientSendSignonData->Destroy();
 	SV_ComputeClientPacks_detour->Destroy();
+	SV_WriteClassInfos_detour->Destroy();
+	SV_ComputeClassInfosCRC_detour->Destroy();
+	SV_WriteSendTables_detour->Destroy();
+	SendTable_WriteInfos_detour->Destroy();
+	CBaseServer_WriteDeltaEntities_detour->Destroy();
+	SV_CreateBaseline_detour->Destroy();
+	SV_EnsureInstanceBaseline_detour->Destroy();
 	if(pPvAllocEntPrivateData) {
 		pPvAllocEntPrivateData->Destroy();
 	}
 	pPhysicsRunSpecificThink->Destroy();
 	pCGameServerAssignClassIds->Destroy();
 	g_pSDKHooks->RemoveEntityListener(this);
+#ifdef __HAS_PROXYSEND
+	if(proxysend) {
+		proxysend->remove_listener(this);
+	}
+#endif
 	plsys->RemovePluginsListener(this);
 	handlesys->RemoveType(factory_handle, myself->GetIdentity());
 	handlesys->RemoveType(datamap_handle, myself->GetIdentity());
@@ -4343,18 +5888,24 @@ void Sample::SDK_OnAllLoaded()
 	SM_GET_LATE_IFACE(PROXYSEND, proxysend);
 	if(proxysend) {
 		proxysend->add_listener(this);
-		SV_ComputeClientPacks_detour->DisableDetour();
 	} else {
 		SV_ComputeClientPacks_detour->EnableDetour();
+		CBaseServer_WriteDeltaEntities_detour->EnableDetour();
 	}
+#else
+	SV_ComputeClientPacks_detour->EnableDetour();
+	CBaseServer_WriteDeltaEntities_detour->EnableDetour();
 #endif
 
 	g_pSDKHooks->AddEntityListener(this);
 	
 #if SOURCE_ENGINE == SE_LEFT4DEAD2
 	server = g_pSDKTools->GetIServer();
+	void **vtable = *(void ***)server;
+	int index = vfunc_index(&CBaseServer::WriteDeltaEntities);
+	CBaseServer_WriteDeltaEntities_detour = DETOUR_CREATE_MEMBER(CBaseServer_WriteDeltaEntities, vtable[index]);
 #endif
-	
+
 	sharesys->AddNatives(myself, natives);
 }
 
@@ -4392,8 +5943,10 @@ void Sample::NotifyInterfaceDrop(SMInterface *pInterface)
 	}
 #ifdef __HAS_PROXYSEND
 	else if(strcmp(pInterface->GetInterfaceName(), SMINTERFACE_PROXYSEND_NAME) == 0) {
+		proxysend->remove_listener(this);
 		proxysend = NULL;
 		SV_ComputeClientPacks_detour->EnableDetour();
+		CBaseServer_WriteDeltaEntities_detour->EnableDetour();
 	}
 #endif
 }
@@ -4407,12 +5960,38 @@ CON_COMMAND(dump_baselinemap, "")
 
 CON_COMMAND(dump_baseline, "")
 {
-	m_pInstanceBaselineTable = netstringtables->FindTable(INSTANCE_BASELINE_TABLENAME);
-
 	for(int i = 0; i < m_pInstanceBaselineTable->GetNumStrings(); ++i) {
 		const char *str = m_pInstanceBaselineTable->GetString(i);
 		int id = V_atoi(str);
 		META_CONPRINTF("%i = %s = %s\n", i, str, baselinemap[id] ? baselinemap[id]->GetName() : "NULL");
+	}
+}
+
+CON_COMMAND(dump_dt_precalc, "")
+{
+	if (args.ArgC() < 2)
+	{
+		META_CONPRINT("Usage: dump_dt_precalc <cls>\n");
+		return;
+	}
+
+	const char *cls = args.Arg(1);
+	if (!cls || cls[0] == '\0')
+	{
+		META_CONPRINT("Usage: dump_dt_precalc <cls>\n");
+		return;
+	}
+
+	ServerClass *pClass = gamehelpers->FindServerClass(cls);
+	if (!pClass)
+	{
+		META_CONPRINT("invalid cls\n");
+		return;
+	}
+
+	for(int i = 0; i < pClass->m_pTable->m_pPrecalc->GetNumProps(); ++i) {
+		const SendProp *prop = pClass->m_pTable->m_pPrecalc->GetProp(i);
+		printf("%i %s\n", i, prop->GetName());
 	}
 }
 
@@ -4422,6 +6001,55 @@ CON_COMMAND(dump_serverclasses_c, "Dumps the class list to console")
 	while(pClass) {
 		printf("%s\n",pClass->GetName());
 		pClass = pClass->m_pNext;
+	}
+}
+
+CON_COMMAND(dump_serverclass_edict, "")
+{
+	if (args.ArgC() < 2)
+	{
+		META_CONPRINT("Usage: dump_serverclass_edict <edict>\n");
+		return;
+	}
+
+	const char *edict_str = args.Arg(1);
+	if (!edict_str || edict_str[0] == '\0')
+	{
+		META_CONPRINT("Usage: dump_serverclass_edict <edict>\n");
+		return;
+	}
+
+	CBaseEntity *pEntity = gamehelpers->ReferenceToEntity(V_atoi(edict_str));
+	if (!pEntity)
+	{
+		META_CONPRINT("invalid edict index\n");
+		return;
+	}
+
+	ServerClass *pClass = pEntity->GetServerClass();
+
+	FILE *fp = stdout;
+
+	fprintf(fp,"%s\n",pClass->GetName());
+	fprintf(fp,"  Entity Classname: %s\n",gamehelpers->GetEntityClassname(pEntity));
+	fprintf(fp,"  ClassID: %i (%s)\n", pClass->m_ClassID, baselinemap[pClass->m_ClassID] ? baselinemap[pClass->m_ClassID]->GetName() : "NULL");
+	if(pClass->m_InstanceBaselineIndex == INVALID_STRING_INDEX) {
+		fprintf(fp,"  InstanceBaselineIndex: INVALID_STRING_INDEX\n");
+	} else {
+		const char *str = m_pInstanceBaselineTable->GetString(pClass->m_InstanceBaselineIndex);
+		int id = V_atoi(str);
+		fprintf(fp,"  InstanceBaselineIndex: %i = %s (%s)\n", pClass->m_InstanceBaselineIndex, str, baselinemap[id] ? baselinemap[id]->GetName() : "NULL");
+	}
+	fprintf(fp,"  Table Name: %s\n", pClass->m_pTable->GetName());
+	auto it{server_ptr_map.find(pClass)};
+	if(it != server_ptr_map.end()) {
+		serverclass_override_t &overr{*it->second};
+		fprintf(fp,"  Server-Side ClassID: %i (%s)\n", overr.classid, baselinemap[overr.classid] ? baselinemap[overr.classid]->GetName() : "NULL");
+		fprintf(fp,"  Server-Side Class Name: %s\n", overr.cls_name.c_str());
+		fprintf(fp,"  Server-Side Table Name: %s\n", overr.tbl_name.c_str());
+		fprintf(fp,"  Client-Side ClassID: %i (%s)\n", overr.cl_classid, baselinemap[overr.cl_classid] ? baselinemap[overr.cl_classid]->GetName() : "NULL");
+		fprintf(fp,"  Client-Side Class Name: %s\n", overr.cls_cl_name.c_str());
+		fprintf(fp,"  Client-Side Table Name: %s\n", overr.tbl_cl_name.c_str());
 	}
 }
 
@@ -4464,21 +6092,29 @@ CON_COMMAND(dump_serverclasses, "Dumps the class list as a text file")
 
 	fprintf(fp, "// Dump of all server classes for \"%s\" as at %s\n//\n\n", g_pSM->GetGameFolderName(), buffer);
 
-	m_pInstanceBaselineTable = netstringtables->FindTable(INSTANCE_BASELINE_TABLENAME);
-
 	ServerClass *pClass = g_pServerClassHead;
 	while(pClass) {
 		fprintf(fp,"%s\n",pClass->GetName());
 		fprintf(fp,"  ClassID: %i (%s)\n", pClass->m_ClassID, baselinemap[pClass->m_ClassID] ? baselinemap[pClass->m_ClassID]->GetName() : "NULL");
 		if(pClass->m_InstanceBaselineIndex == INVALID_STRING_INDEX) {
 			fprintf(fp,"  InstanceBaselineIndex: INVALID_STRING_INDEX\n");
-			fprintf(fp,"  BaselineIndex String: NULL\n");
 		} else {
 			const char *str = m_pInstanceBaselineTable->GetString(pClass->m_InstanceBaselineIndex);
 			int id = V_atoi(str);
-			fprintf(fp,"  InstanceBaselineIndex: %i\n", pClass->m_InstanceBaselineIndex);
-			fprintf(fp,"  BaselineIndex String: %s (%s)\n", str, baselinemap[id] ? baselinemap[id]->GetName() : "NULL");
+			fprintf(fp,"  InstanceBaselineIndex: %i = %s (%s)\n", pClass->m_InstanceBaselineIndex, str, baselinemap[id] ? baselinemap[id]->GetName() : "NULL");
 		}
+		fprintf(fp,"  Table Name: %s\n", pClass->m_pTable->GetName());
+		auto it{server_ptr_map.find(pClass)};
+		if(it != server_ptr_map.end()) {
+			serverclass_override_t &overr{*it->second};
+			fprintf(fp,"  Server-Side ClassID: %i (%s)\n", overr.classid, baselinemap[overr.classid] ? baselinemap[overr.classid]->GetName() : "NULL");
+			fprintf(fp,"  Server-Side Class Name: %s\n", overr.cls_name.c_str());
+			fprintf(fp,"  Server-Side Table Name: %s\n", overr.tbl_name.c_str());
+			fprintf(fp,"  Client-Side ClassID: %i (%s)\n", overr.cl_classid, baselinemap[overr.cl_classid] ? baselinemap[overr.cl_classid]->GetName() : "NULL");
+			fprintf(fp,"  Client-Side Class Name: %s\n", overr.cls_cl_name.c_str());
+			fprintf(fp,"  Client-Side Table Name: %s\n", overr.tbl_cl_name.c_str());
+		}
+
 		pClass = pClass->m_pNext;
 	}
 

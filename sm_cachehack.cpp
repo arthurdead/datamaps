@@ -15,10 +15,12 @@ void remove_datamap_from_sm_cache(datamap_t *pMap)
 void remove_serverclass_from_sm_cache(ServerClass *pMap)
 {
 	CHalfLife2 *hl2 = (CHalfLife2 *)gamehelpers;
-	
-	auto it{hl2->m_Classes.find(pMap->m_pNetworkName)};
-	if(it.found()) {
-		delete *it;
-		hl2->m_Classes.remove(it);
+
+	for(NameHashSet<DataTableInfo *>::iterator iter = hl2->m_Classes.iter(); !iter.empty(); iter.next()) {
+		if((*iter)->sc == pMap) {
+			delete *iter;
+			iter.erase();
+			break;
+		}
 	}
 }
