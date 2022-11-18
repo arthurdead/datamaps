@@ -87,9 +87,35 @@ methodmap CustomSendtable < Handle
 	public native void set_name(const char[] name);
 	public native void set_class_name(const char[] name);
 
+	public void set_shared_name(const char[] name)
+	{
+		char netname[64];
+		strcopy(netname, sizeof(netname), "C");
+		StrCat(netname, sizeof(netname), name);
+		this.set_class_name(netname);
+
+		char tblname[64];
+		strcopy(tblname, sizeof(tblname), "DT_");
+		StrCat(tblname, sizeof(tblname), name);
+		this.set_name(tblname);
+	}
+
 	public native void set_client_name(const char[] name);
 	public native void set_client_class_id(const char[] name);
 	public native void set_client_class_name(const char[] name);
+
+	public void set_shared_client_name(const char[] name)
+	{
+		char netname[64];
+		strcopy(netname, sizeof(netname), "C");
+		StrCat(netname, sizeof(netname), name);
+		this.set_client_class_name(netname);
+
+		char tblname[64];
+		strcopy(tblname, sizeof(tblname), "DT_");
+		StrCat(tblname, sizeof(tblname), name);
+		this.set_client_name(tblname);
+	}
 
 	public native void add_prop_float(const char[] name, float low_value = 0.0, float high_value = HIGH_DEFAULT, int bits = 32, int flags = 0, int elements = 1, int offset = PROP_OFFSET_EXISTING);
 
@@ -109,6 +135,14 @@ methodmap CustomDatamap < Handle
 	public static native CustomDatamap from_factory(CustomEntityFactory fac);
 
 	public native void set_name(const char[] name);
+
+	public void set_shared_name(const char[] name)
+	{
+		char netname[64];
+		strcopy(netname, sizeof(netname), "C");
+		StrCat(netname, sizeof(netname), name);
+		this.set_name(netname);
+	}
 
 	public native void add_prop(const char[] name, custom_prop_type type, int num = 1);
 };

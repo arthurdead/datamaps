@@ -1509,22 +1509,6 @@ void assign_prop(SendProp *prop, SendProp *realprop)
 	prop->m_fHighLowMul = realprop->m_fHighLowMul;
 }
 
-ServerClass *FindServerClass(const char *classname)
-{
-#if 1
-	ServerClass *srvcls = gamehelpers->FindServerClass(classname);
-#else
-	ServerClass *srvcls = gamedll->GetAllServerClasses();
-	while(srvcls) {
-		if(strcmp(classname, srvcls->GetName()) == 0) {
-			break;
-		}
-		srvcls = srvcls->m_pNext;
-	}
-#endif
-	return srvcls;
-}
-
 struct unexclude_prop_t
 {
 	unexclude_prop_t(SendProp *prop_, const char *m_pExcludeDTName_, const char *m_pVarName_)
@@ -1829,7 +1813,10 @@ struct serverclass_override_t : public hookobj_t
 
 	void do_override(int &base, CBaseEntity *pEntity, IServerNetworkable *pNet);
 
-	void override_with(ServerClass *netclass);
+	void set_client_class_id(ServerClass *netclass);
+	void set_client_class_name(std::string &&name);
+	void set_client_table_name(std::string &&name);
+
 	void set_base_class(SendTable *table);
 	void unexclude_prop(SendProp *prop, SendProp *realprop);
 	
@@ -2065,13 +2052,19 @@ struct serverclass_override_t : public hookobj_t
 	int get_prop_offset(const char *name)
 	{
 		int offset = -1;
-		if(classid_cls) {
-			offset = get_prop_offset(classid_cls->m_pNetworkName, name);
+		if(cl_classid_cls) {
+			offset = get_prop_offset(cl_classid_cls->m_pNetworkName, name);
 			if(offset != -1) {
 				return offset;
 			}
-		}
-		if(!cls_cl_name.empty()) {
+
+			if(!cls_cl_name.empty() && strcmp(cls_cl_name.c_str(), cl_classid_cls->m_pNetworkName) != 0) {
+				offset = get_prop_offset(cls_cl_name.c_str(), name);
+				if(offset != -1) {
+					return offset;
+				}
+			}
+		} else if(!cls_cl_name.empty()) {
 			offset = get_prop_offset(cls_cl_name.c_str(), name);
 			if(offset != -1) {
 				return offset;
@@ -2331,8 +2324,7 @@ struct serverclass_override_t : public hookobj_t
 	int classid = -1;
 	std::vector<custom_SendProp> props{};
 	ServerClass *realcls = nullptr;
-	ServerClass *classid_cls = nullptr;
-	ServerClass *cl_name_cls = nullptr;
+	ServerClass *cl_classid_cls = nullptr;
 	std::string clsname{};
 	Handle_t hndl = BAD_HANDLE;
 	IPluginContext *pContext = nullptr;
@@ -3895,7 +3887,7 @@ cell_t CustomSendtableset_base_class(IPluginContext *pContext, const cell_t *par
 	char *netname = nullptr;
 	pContext->LocalToString(params[2], &netname);
 	
-	ServerClass *svcls = FindServerClass(netname);
+	ServerClass *svcls = gamehelpers->FindServerClass(netname);
 	if(!svcls) {
 		return pContext->ThrowNativeError("invalid netname %s", netname);
 	}
@@ -3968,7 +3960,7 @@ cell_t CustomSendtableset_client_class_name(IPluginContext *pContext, const cell
 
 	std::string namestr{name};
 
-	factory->cls_cl_name = std::move(namestr);
+	factory->set_client_class_name(std::move(namestr));
 	return 0;
 }
 
@@ -3988,7 +3980,7 @@ cell_t CustomSendtableset_client_name(IPluginContext *pContext, const cell_t *pa
 
 	std::string namestr{name};
 
-	factory->tbl_cl_name = std::move(namestr);
+	factory->set_client_table_name(std::move(namestr));
 	return 0;
 }
 
@@ -4006,12 +3998,12 @@ cell_t CustomSendtableoverride_with(IPluginContext *pContext, const cell_t *para
 	char *netname = nullptr;
 	pContext->LocalToString(params[2], &netname);
 	
-	ServerClass *netclass = FindServerClass(netname);
+	ServerClass *netclass = gamehelpers->FindServerClass(netname);
 	if(!netclass) {
 		return pContext->ThrowNativeError("invalid netname %s", netname);
 	}
 	
-	factory->override_with(netclass);
+	factory->set_client_class_id(netclass);
 	return 0;
 }
 
@@ -4958,8 +4950,8 @@ DETOUR_DECL_STATIC4(DetourSV_EnsureInstanceBaseline, void, ServerClass *,pServer
 		auto it{server_ptr_map.find(pClass)};
 		if(it != server_ptr_map.end()) {
 			serverclass_override_t &overr{*it->second};
-			if(overr.classid_cls) {
-				add_baseline_for_class(overr.classid_cls, iEdict);
+			if(overr.cl_classid_cls) {
+				add_baseline_for_class(overr.cl_classid_cls, iEdict);
 			} else if(overr.realcls) {
 				add_baseline_for_class(overr.realcls, iEdict);
 			}
@@ -5004,8 +4996,8 @@ DETOUR_DECL_MEMBER0(DetourCGameServerAssignClassIds, void)
 		if(it != server_ptr_map.end()) {
 			serverclass_override_t &overr{*it->second};
 			overr.classid = pClass->m_ClassID;
-			if(overr.classid_cls) {
-				overr.cl_classid = overr.classid_cls->m_ClassID;
+			if(overr.cl_classid_cls) {
+				overr.cl_classid = overr.cl_classid_cls->m_ClassID;
 			} else if(overr.realcls) {
 				overr.cl_classid = overr.realcls->m_ClassID;
 			}
@@ -5032,11 +5024,36 @@ void serverclass_override_t::init_classid()
 	}
 }
 
-void serverclass_override_t::override_with(ServerClass *netclass)
+void serverclass_override_t::set_client_class_id(ServerClass *netclass)
 {
-	classid_cls = netclass;
+	cl_classid_cls = netclass;
 
-	cl_classid = classid_cls->m_ClassID;
+	cl_classid = cl_classid_cls->m_ClassID;
+
+	if(cls_cl_name.empty()) {
+		cls_cl_name = cl_classid_cls->m_pNetworkName;
+	}
+
+	if(tbl_cl_name.empty()) {
+		tbl_cl_name = cl_classid_cls->m_pTable->m_pNetTableName;
+	}
+}
+
+void serverclass_override_t::set_client_class_name(std::string &&name)
+{
+	cls_cl_name = std::move(name);
+
+	if(!cl_classid_cls) {
+		ServerClass *netclass = gamehelpers->FindServerClass(name.c_str());
+		if(netclass) {
+			set_client_class_id(netclass);
+		}
+	}
+}
+
+void serverclass_override_t::set_client_table_name(std::string &&name)
+{
+	tbl_cl_name = std::move(name);
 }
 
 void serverclass_override_t::init()
@@ -5057,7 +5074,7 @@ void serverclass_override_t::init()
 	}
 	cls.set_name(cls_name);
 
-	if(!classid_cls) {
+	if(!cl_classid_cls) {
 		cl_classid = realcls->m_ClassID;
 	}
 }
