@@ -50,12 +50,10 @@
 #define GAME_DLL
 
 #include <string>
-#include <string_view>
 #include <vector>
 #include <unordered_map>
 
 using namespace std::literals::string_literals;
-using namespace std::literals::string_view_literals;
 
 #include "extension.h"
 #include <ISDKTools.h>
@@ -533,7 +531,8 @@ struct callback_holder_t
 
 	callback_t think{};
 
-	std::unordered_map<std::string, callback_t> thinkctxs{};
+	using thinkctxs_t = std::unordered_map<std::string, callback_t>;
+	thinkctxs_t thinkctxs{};
 
 	int ref = -1;
 	std::vector<IdentityToken_t *> owners{};
@@ -554,8 +553,8 @@ void CBaseEntity::PluginThinkContext()
 {
 	int this_ref = gamehelpers->EntityToReference(this);
 
-	auto cb_it{callbackmap.find(this_ref)};
-	if(cb_it == callbackmap.cend()) {
+	callback_holder_map_t::iterator cb_it{callbackmap.find(this_ref)};
+	if(cb_it == callbackmap.end()) {
 		return;
 	}
 
@@ -568,7 +567,7 @@ void CBaseEntity::PluginThinkContext()
 		return;
 	}
 
-	auto fnc_it = holder->thinkctxs.begin();
+	callback_holder_t::thinkctxs_t::iterator fnc_it = holder->thinkctxs.begin();
 	std::advance(fnc_it, m_iCurrentThinkContext);
 	
 	IChangeableForward *fwd = fnc_it->second.fwd;
@@ -597,8 +596,8 @@ void CBaseEntity::PluginThink()
 {
 	int this_ref = gamehelpers->EntityToReference(this);
 
-	auto it{callbackmap.find(this_ref)};
-	if(it == callbackmap.cend()) {
+	callback_holder_map_t::iterator it{callbackmap.find(this_ref)};
+	if(it == callbackmap.end()) {
 		return;
 	}
 
@@ -733,7 +732,8 @@ void loop_all_entities(T func, const char *name)
 
 SH_DECL_HOOK1(IEntityFactoryDictionary, FindFactory, SH_NOATTRIB, 0, IEntityFactory *, const char *);
 
-std::unordered_map<std::string, IEntityFactory *> factory_aliases;
+using factory_aliases_t = std::unordered_map<std::string, IEntityFactory *>;
+factory_aliases_t factory_aliases;
 
 class CEntityFactoryDictionary : public IEntityFactoryDictionary
 {
@@ -784,8 +784,8 @@ public:
 	{
 		unsigned short nIndex = m_Factories.Find( pClassName );
 		if ( nIndex == m_Factories.InvalidIndex() ) {
-			auto it{factory_aliases.find(std::string{pClassName})};
-			if(it != factory_aliases.cend()) {
+			factory_aliases_t::iterator it{factory_aliases.find(std::string{pClassName})};
+			if(it != factory_aliases.end()) {
 				RETURN_META_VALUE(MRES_SUPERCEDE, it->second);
 			}
 
@@ -879,8 +879,8 @@ struct custom_typedescription_t : typedescription_t
 	}
 };
 
-static_assert(sizeof(custom_typedescription_t) == sizeof(typedescription_t));
-static_assert(alignof(custom_typedescription_t) == alignof(typedescription_t));
+static_assert(sizeof(custom_typedescription_t) == sizeof(typedescription_t), "");
+static_assert(alignof(custom_typedescription_t) == alignof(typedescription_t), "");
 
 #if SOURCE_ENGINE == SE_LEFT4DEAD2
 //TODO!!! m_pOptimizedDataMap
@@ -928,8 +928,8 @@ struct custom_datamap_t : datamap_t
 	}
 };
 
-static_assert(sizeof(custom_datamap_t) == sizeof(datamap_t));
-static_assert(alignof(custom_datamap_t) == alignof(datamap_t));
+static_assert(sizeof(custom_datamap_t) == sizeof(datamap_t), "");
+static_assert(alignof(custom_datamap_t) == alignof(datamap_t), "");
 
 SH_DECL_HOOK1(IEntityFactory, Create, SH_NOATTRIB, 0, IServerNetworkable *, const char *);
 SH_DECL_HOOK1(IVEngineServer, PvAllocEntPrivateData, SH_NOATTRIB, 0, void *, long);
@@ -958,8 +958,10 @@ enum custom_prop_type
 
 class hookobj_t;
 
-std::unordered_map<int, std::vector<hookobj_t *>> hookobjs{};
-std::vector<int> svcls_hooks{};
+using hookobjs_t = std::unordered_map<int, std::vector<hookobj_t *>>;
+hookobjs_t hookobjs{};
+using svcls_hooks_t = std::vector<int>;
+svcls_hooks_t svcls_hooks{};
 
 class hookobj_t
 {
@@ -996,14 +998,15 @@ public:
 			hookids_late.clear();
 		}
 	};
-	std::unordered_map<int, hookinfo_t> entities{};
+	using entities_t = std::unordered_map<int, hookinfo_t>;
+	entities_t entities{};
 
 	hookinfo_t &add_hooks(CBaseEntity *pEntity)
 	{
 		int ref = gamehelpers->EntityToReference(pEntity);
 
-		auto it_objs{hookobjs.find(ref)};
-		if(it_objs == hookobjs.cend()) {
+		hookobjs_t::iterator it_objs{hookobjs.find(ref)};
+		if(it_objs == hookobjs.end()) {
 			it_objs = hookobjs.emplace(ref, std::vector<hookobj_t *>{}).first;
 		}
 		it_objs->second.emplace_back(this);
@@ -1019,7 +1022,7 @@ public:
 
 		int ref = gamehelpers->EntityToReference(pEntity);
 
-		auto it{entities.find(ref)};
+		entities_t::iterator it{entities.find(ref)};
 		if(it != entities.end()) {
 			it->second.remove_all();
 			hooks_removed(pEntity, ref);
@@ -1064,10 +1067,11 @@ public:
 
 	virtual void hooks_removed(CBaseEntity *pEntity, int ref)
 	{
-		auto it_objs{hookobjs.find(ref)};
+		hookobjs_t::iterator it_objs{hookobjs.find(ref)};
 		if(it_objs != hookobjs.end()) {
-			std::vector<hookobj_t *> &vec{it_objs->second};
-			auto it_obj{std::find(vec.begin(), vec.end(), this)};
+			using vec_t = std::vector<hookobj_t *>;
+			vec_t &vec{it_objs->second};
+			vec_t::iterator it_obj{std::find(vec.begin(), vec.end(), this)};
 			if(it_obj != vec.end()) {
 				vec.erase(it_obj);
 			}
@@ -1416,8 +1420,8 @@ public:
 	int							m_InstanceBaselineIndex; // INVALID_STRING_INDEX if not initialized yet.
 };
 
-static_assert(sizeof(custom_ServerClass) == sizeof(ServerClass));
-static_assert(alignof(custom_ServerClass) == alignof(ServerClass));
+static_assert(sizeof(custom_ServerClass) == sizeof(ServerClass), "");
+static_assert(alignof(custom_ServerClass) == alignof(ServerClass), "");
 
 SendProp *UTIL_FindInSendTable(SendTable *pTable, const char *name, bool recursive, bool ignoreexclude)
 {
@@ -1589,8 +1593,8 @@ public:
 	}
 };
 
-static_assert(sizeof(custom_SendTable) == sizeof(SendTable));
-static_assert(alignof(custom_SendTable) == alignof(SendTable));
+static_assert(sizeof(custom_SendTable) == sizeof(SendTable), "");
+static_assert(alignof(custom_SendTable) == alignof(SendTable), "");
 
 extern float AssignRangeMultiplier( int nBits, double range );
 
@@ -1695,8 +1699,8 @@ public:
 	{ return *(extra_data_t *)GetExtraData(); }
 };
 
-static_assert(sizeof(custom_SendProp) == sizeof(SendProp));
-static_assert(alignof(custom_SendProp) == alignof(SendProp));
+static_assert(sizeof(custom_SendProp) == sizeof(SendProp), "");
+static_assert(alignof(custom_SendProp) == alignof(SendProp), "");
 
 char *UTIL_SendFlagsToString(int flags, int type);
 
@@ -1845,7 +1849,7 @@ struct serverclass_override_t : public hookobj_t
 
 		dtor(pEntity);
 
-		auto hsvcls_it{std::find(svcls_hooks.begin(), svcls_hooks.end(), ref)};
+		svcls_hooks_t::iterator hsvcls_it{std::find(svcls_hooks.begin(), svcls_hooks.end(), ref)};
 		if(hsvcls_it != svcls_hooks.end()) {
 			svcls_hooks.erase(hsvcls_it);
 		}
@@ -2028,7 +2032,8 @@ struct serverclass_override_t : public hookobj_t
 
 	custom_SendProp *emplace_prop()
 	{
-		custom_SendProp *prop = &props.emplace_back();
+		props.emplace_back();
+		custom_SendProp *prop = &props.back();
 		update_props();
 		return prop;
 	}
@@ -2082,7 +2087,8 @@ struct serverclass_override_t : public hookobj_t
 	template <typename T>
 	custom_SendProp *emplace_prop(const std::string &name, int offset, int elementCount)
 	{
-		custom_SendProp *prop = &props.emplace_back();
+		props.emplace_back();
+		custom_SendProp *prop = &props.back();
 		update_props();
 		prop->set_name(name);
 		int var_size{get_var_size<T>(elementCount)};
@@ -4122,8 +4128,8 @@ cell_t CustomEntityFactoryadd_alias(IPluginContext *pContext, const cell_t *para
 	pContext->LocalToString(params[2], &classname_ptr);
 	std::string classname{classname_ptr};
 
-	auto it{factory_aliases.find(classname)};
-	if(it != factory_aliases.cend()) {
+	factory_aliases_t::iterator it{factory_aliases.find(classname)};
+	if(it != factory_aliases.end()) {
 		return pContext->ThrowNativeError("%s is already registered", classname_ptr);
 	}
 
@@ -4161,7 +4167,7 @@ static cell_t SetEntityContextThink(IPluginContext *pContext, const cell_t *para
 	if(it != callbackmap.end()) {
 		holder = it->second;
 
-		auto it_cb{holder->thinkctxs.find(context)};
+		callback_holder_t::thinkctxs_t::iterator it_cb{holder->thinkctxs.find(context)};
 		if(it_cb != holder->thinkctxs.cend()) {
 			callback = &it_cb->second;
 		}
@@ -4328,10 +4334,11 @@ void Sample::OnPluginUnloaded(IPlugin *plugin)
 	callback_holder_map_t::iterator it{callbackmap.begin()};
 	while(it != callbackmap.end()) {
 		callback_holder_t *holder = it->second;
-		std::vector<IdentityToken_t *> &owners{holder->owners};
+		using owners_t = std::vector<IdentityToken_t *>;
+		owners_t &owners{holder->owners};
 
-		auto it_own{std::find(owners.begin(), owners.end(), plugin->GetIdentity())};
-		if(it_own != owners.cend()) {
+		owners_t::iterator it_own{std::find(owners.begin(), owners.end(), plugin->GetIdentity())};
+		if(it_own != owners.end()) {
 			owners.erase(it_own);
 
 			size_t func_count{0};
@@ -4614,7 +4621,7 @@ static void handle_classinfos(SVC_ClassInfo &classinfomsg)
 		const char *netname{pClass->m_pNetworkName};
 		const char *tblname{pClass->m_pTable->GetName()};
 
-		auto it{server_ptr_map.find(pClass)};
+		server_ptr_map_t::iterator it{server_ptr_map.find(pClass)};
 		if(it != server_ptr_map.end()) {
 			serverclass_override_t &overr{*it->second};
 			if(!overr.cls_cl_name.empty()) {
@@ -4844,7 +4851,7 @@ DETOUR_DECL_STATIC2(DetourSV_WriteSendTables, void, ServerClass *,pClasses, bf_w
 	// on the client.
 	for ( pCur=pClasses; pCur; pCur=pCur->m_pNext )
 	{
-		auto it{server_ptr_map.find(pCur)};
+		server_ptr_map_t::iterator it{server_ptr_map.find(pCur)};
 		if(it != server_ptr_map.end()) {
 			serverclass_override_t &overr{*it->second};
 			curr_server_info = &overr;
@@ -4859,7 +4866,7 @@ DETOUR_DECL_STATIC2(DetourSV_WriteSendTables, void, ServerClass *,pClasses, bf_w
 	// because we will never send these SendTables by themselves.
 	for ( pCur=pClasses; pCur; pCur=pCur->m_pNext )
 	{
-		auto it{server_ptr_map.find(pCur)};
+		server_ptr_map_t::iterator it{server_ptr_map.find(pCur)};
 		if(it != server_ptr_map.end()) {
 			serverclass_override_t &overr{*it->second};
 			curr_server_info = &overr;
@@ -4884,7 +4891,7 @@ void Sample::pre_write_deltas() const noexcept
 	if(sv_sendtables->GetInt() == 0) {
 		for ( ServerClass *pCur=custom_server_head; pCur; pCur=pCur->m_pNext )
 		{
-			auto it{server_ptr_map.find(pCur)};
+			server_ptr_map_t::iterator it{server_ptr_map.find(pCur)};
 			if(it != server_ptr_map.end()) {
 				serverclass_override_t &overr{*it->second};
 				old_classids.emplace(pCur, pCur->m_ClassID);
@@ -4947,7 +4954,7 @@ DETOUR_DECL_STATIC4(DetourSV_EnsureInstanceBaseline, void, ServerClass *,pServer
 	ServerClass *pClass = gamehelpers->EdictOfIndex(iEdict)->GetNetworkable()->GetServerClass();
 
 	if(sv_sendtables->GetInt() == 0) {
-		auto it{server_ptr_map.find(pClass)};
+		server_ptr_map_t::iterator it{server_ptr_map.find(pClass)};
 		if(it != server_ptr_map.end()) {
 			serverclass_override_t &overr{*it->second};
 			if(overr.cl_classid_cls) {
@@ -4992,7 +4999,7 @@ DETOUR_DECL_MEMBER0(DetourCGameServerAssignClassIds, void)
 
 		++nClasses;
 
-		auto it{server_ptr_map.find(pClass)};
+		server_ptr_map_t::iterator it{server_ptr_map.find(pClass)};
 		if(it != server_ptr_map.end()) {
 			serverclass_override_t &overr{*it->second};
 			overr.classid = pClass->m_ClassID;
@@ -6058,7 +6065,7 @@ CON_COMMAND(dump_serverclass_edict, "")
 		fprintf(fp,"  InstanceBaselineIndex: %i = %s (%s)\n", pClass->m_InstanceBaselineIndex, str, baselinemap[id] ? baselinemap[id]->GetName() : "NULL");
 	}
 	fprintf(fp,"  Table Name: %s\n", pClass->m_pTable->GetName());
-	auto it{server_ptr_map.find(pClass)};
+	server_ptr_map_t::iterator it{server_ptr_map.find(pClass)};
 	if(it != server_ptr_map.end()) {
 		serverclass_override_t &overr{*it->second};
 		fprintf(fp,"  Server-Side ClassID: %i (%s)\n", overr.classid, baselinemap[overr.classid] ? baselinemap[overr.classid]->GetName() : "NULL");
@@ -6121,7 +6128,7 @@ CON_COMMAND(dump_serverclasses, "Dumps the class list as a text file")
 			fprintf(fp,"  InstanceBaselineIndex: %i = %s (%s)\n", pClass->m_InstanceBaselineIndex, str, baselinemap[id] ? baselinemap[id]->GetName() : "NULL");
 		}
 		fprintf(fp,"  Table Name: %s\n", pClass->m_pTable->GetName());
-		auto it{server_ptr_map.find(pClass)};
+		server_ptr_map_t::iterator it{server_ptr_map.find(pClass)};
 		if(it != server_ptr_map.end()) {
 			serverclass_override_t &overr{*it->second};
 			fprintf(fp,"  Server-Side ClassID: %i (%s)\n", overr.classid, baselinemap[overr.classid] ? baselinemap[overr.classid]->GetName() : "NULL");
