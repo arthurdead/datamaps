@@ -65,6 +65,11 @@ using namespace std::literals::string_literals;
 #include <dt_common.h>
 #include <shareddefs.h>
 
+#undef SPROP_COORD
+#define SPROP_COORD (1 << 1)
+
+static_assert(SPROP_COORD != SPROP_COORD_MP, "");
+
 #ifdef __HAS_PROXYSEND
 class proxysend *proxysend = nullptr;
 #endif
@@ -4959,7 +4964,8 @@ DETOUR_DECL_STATIC4(DetourSV_EnsureInstanceBaseline, void, ServerClass *,pServer
 			serverclass_override_t &overr{*it->second};
 			if(overr.cl_classid_cls) {
 				add_baseline_for_class(overr.cl_classid_cls, iEdict);
-			} else if(overr.realcls) {
+			}
+			if(overr.realcls) {
 				add_baseline_for_class(overr.realcls, iEdict);
 			}
 		}
@@ -5035,7 +5041,9 @@ void serverclass_override_t::set_client_class_id(ServerClass *netclass)
 {
 	cl_classid_cls = netclass;
 
-	cl_classid = cl_classid_cls->m_ClassID;
+	if(classids_assigned) {
+		cl_classid = cl_classid_cls->m_ClassID;
+	}
 
 	if(cls_cl_name.empty()) {
 		cls_cl_name = cl_classid_cls->m_pNetworkName;
@@ -5081,7 +5089,7 @@ void serverclass_override_t::init()
 	}
 	cls.set_name(cls_name);
 
-	if(!cl_classid_cls) {
+	if(classids_assigned && !cl_classid_cls) {
 		cl_classid = realcls->m_ClassID;
 	}
 }

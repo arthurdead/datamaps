@@ -68,8 +68,8 @@ enum custom_prop_type
 #define SPROP_UNSIGNED  (1 << 0)
 #define SPROP_COORD     (1 << 1)
 #define SPROP_NOSCALE   (1 << 2)
-#define SPROP_NORMAL    (1 << 5)
 #define SPROP_ROUNDDOWN (1 << 3)
+#define SPROP_NORMAL    (1 << 5)
 #define SPROP_COORD_MP  (1 << 13)
 #define SPROP_VARINT    SPROP_NORMAL
 
