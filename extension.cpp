@@ -1536,15 +1536,15 @@ struct unexclude_prop_t
 			prop->SetParentArrayPropName(nullptr);
 			prop->SetArrayProp(nullptr);
 			prop->SetArrayLengthProxy(nullptr);
-			prop->SetNumElements(0);
+			prop->SetNumElements(1);
 			prop->SetExtraData(nullptr);
 			
 			prop->m_Type = DPT_Int;
 			prop->m_nBits = 0;
-			prop->m_fLowValue = 0;
-			prop->m_fHighValue = 0;
-			prop->m_ElementStride = 0;
-			prop->m_fHighLowMul = 0;
+			prop->m_fLowValue = 0.0f;
+			prop->m_fHighValue = 0.0f;
+			prop->m_ElementStride = -1;
+			prop->m_fHighLowMul = 0.0f;
 			
 			prop->m_pExcludeDTName = m_pExcludeDTName;
 			prop->m_pVarName = m_pVarName;
@@ -1689,8 +1689,8 @@ public:
 		m_nBits = 0;
 		m_pArrayProp = nullptr;
 		m_ArrayLengthProxy = nullptr;
-		m_nElements = 0;
-		m_ElementStride = 0;
+		m_nElements = 1;
+		m_ElementStride = -1;
 
 		SetFlags(0);
 		SetOffset(0);
@@ -1787,6 +1787,9 @@ template <typename T>
 using netvar_ehndl_t = CNetworkHandleBase<T, NetworkVar_Generic>;
 
 template <typename T>
+using netvar_clr32_t = CNetworkColor32Base<T, NetworkVar_Generic>;
+
+template <typename T>
 using netvar_arr_t = NetworkVar_ArrayUnknownSize<T>;
 
 template <typename T>
@@ -1806,6 +1809,16 @@ int get_var_size<EHANDLE>(int elementCount)
 		return sizeof(netvar_ehndl_t<EHANDLE>);
 	} else {
 		return netvar_arr_t<EHANDLE>::size(elementCount);
+	}
+}
+
+template <>
+int get_var_size<color32>(int elementCount)
+{
+	if(elementCount == 1) {
+		return sizeof(netvar_clr32_t<color32>);
+	} else {
+		return netvar_arr_t<color32>::size(elementCount);
 	}
 }
 
@@ -2043,8 +2056,8 @@ struct serverclass_override_t : public hookobj_t
 		return prop;
 	}
 
-	#define PROP_OFFSET_EXISTING -1
-	#define PROP_OFFSET_NEW -2
+	#define PROP_OFFSET_NEW -1
+	#define PROP_OFFSET_EXISTING -2
 
 	int get_prop_offset(const char *cls, const char *name)
 	{
@@ -2335,7 +2348,9 @@ struct serverclass_override_t : public hookobj_t
 	int classid = -1;
 	std::vector<custom_SendProp> props{};
 	ServerClass *realcls = nullptr;
+	int realcls_baselineindex = INVALID_STRING_INDEX;
 	ServerClass *cl_classid_cls = nullptr;
+	int cl_baselineindex = INVALID_STRING_INDEX;
 	std::string clsname{};
 	Handle_t hndl = BAD_HANDLE;
 	IPluginContext *pContext = nullptr;
@@ -2874,6 +2889,11 @@ public:
 		return &m_Root; 
 	}
 
+	inline const SendProp* GetDatatableProp( int i ) const
+	{
+		return m_DatatableProps[i];
+	}
+
 	bool SetupFlatPropertyArray();
 
 	class CProxyPathEntry
@@ -3069,7 +3089,7 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	
 	server_map.emplace(clsname, this);
 	server_ptr_map.emplace((ServerClass *)&cls, this);
-	
+
 	counterid = classoverridecounter++;
 	
 	custom_SendProp *prop = emplace_prop();
@@ -4476,7 +4496,7 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 		} else if(strcmp(g_pServerClassTail->m_pNetworkName, "CWeaponMedigun") == 0) {
 			CWeaponMedigun_ServerClass = g_pServerClassTail;
 		}
-		
+
 		if(!g_pServerClassTail->m_pNext) {
 			break;
 		}
@@ -4524,6 +4544,16 @@ void Sample::OnCoreMapStart(edict_t *pEdictList, int edictCount, int clientMax)
 
 void Sample::OnCoreMapEnd()
 {
+	for ( ServerClass *pClass=custom_server_head; pClass; pClass=pClass->m_pNext )
+	{
+		server_ptr_map_t::iterator it{server_ptr_map.find(pClass)};
+		if(it != server_ptr_map.end()) {
+			serverclass_override_t &overr{*it->second};
+			overr.cl_baselineindex = INVALID_STRING_INDEX;
+			overr.realcls_baselineindex = INVALID_STRING_INDEX;
+		}
+	}
+
 	classids_assigned = false;
 	classid_last = 0;
 	def_classid_last = 0;
@@ -4914,17 +4944,843 @@ void Sample::post_write_deltas() const noexcept
 	old_classids.clear();
 }
 
-void *SendTable_EncodePtr{nullptr};
+static 	CSendProxyRecipients s_Recipients;
 
-bool SendTable_Encode(const SendTable *pTable, const void *pStruct, bf_write *pOut, int objectID, CUtlMemory<CSendProxyRecipients> *pRecipients, bool bNonZeroOnly)
+class CDeltaBitsWriter
 {
-	return (void_to_func<bool(*)(const SendTable *, const void *, bf_write *, int, CUtlMemory<CSendProxyRecipients> *, bool)>(SendTable_EncodePtr))(pTable, pStruct, pOut, objectID, pRecipients, bNonZeroOnly);
+public:
+				CDeltaBitsWriter( bf_write *pBuf );
+				~CDeltaBitsWriter();
+
+	// Write the next property index. Returns the number of bits used.
+	void		WritePropIndex( int iProp );
+
+	// Access the buffer it's outputting to.
+	bf_write*	GetBitBuf();
+
+private:
+	bf_write	*m_pBuf;
+	int			m_iLastProp;
+};
+
+inline CDeltaBitsWriter::CDeltaBitsWriter( bf_write *pBuf )
+{
+	m_pBuf = pBuf;
+	m_iLastProp = -1;
 }
 
-static void add_baseline_for_class(ServerClass *pClass, int entnum)
+inline bf_write* CDeltaBitsWriter::GetBitBuf()
+{
+	return m_pBuf;
+}
+
+FORCEINLINE void CDeltaBitsWriter::WritePropIndex( int iProp )
+{
+	Assert( iProp >= 0 && iProp < MAX_DATATABLE_PROPS );
+	unsigned int diff = iProp - m_iLastProp;
+	m_iLastProp = iProp;
+	Assert( diff > 0 && diff <= MAX_DATATABLE_PROPS );
+	// Expanded inline for maximum efficiency.
+	//m_pBuf->WriteOneBit( 1 );
+	//m_pBuf->WriteUBitVar( diff - 1 );
+	COMPILE_TIME_ASSERT( MAX_DATATABLE_PROPS <= 0x1000u );
+	int n = ((diff < 0x11u) ? -1 : 0) + ((diff < 0x101u) ? -1 : 0);
+	m_pBuf->WriteUBitLong( diff*8 - 8 + 4 + n*2 + 1, 8 + n*4 + 4 + 2 + 1 );
+}
+
+inline CDeltaBitsWriter::~CDeltaBitsWriter()
+{
+	m_pBuf->WriteOneBit( 0 );
+}
+
+abstract_class CDatatableStack
+{
+public:
+	
+	CDatatableStack( CSendTablePrecalc *pPrecalc, unsigned char *pStructBase, int objectID )
+	{
+		m_pPrecalc = pPrecalc;
+
+		m_pStructBase = pStructBase;
+		m_ObjectID = objectID;
+		
+		m_iCurProp = 0;
+		m_pCurProp = NULL;
+
+		m_bInitted = false;
+
+	#ifdef _DEBUG
+		memset( m_pProxies, 0xFF, sizeof( m_pProxies ) );
+	#endif
+	}
+
+	void Init( bool bExplicitRoutes=false )
+	{
+		if ( bExplicitRoutes )
+		{
+			memset( m_pProxies, 0xFF, sizeof( m_pProxies[0] ) * m_pPrecalc->m_ProxyPaths.Count() );
+		}
+		else
+		{
+			// Walk down the tree and call all the datatable proxies as we hit them.
+			RecurseAndCallProxies( &m_pPrecalc->m_Root, m_pStructBase );
+		}
+
+		m_bInitted = true;
+	}
+
+	// The stack is meant to be used by calling SeekToProp with increasing property
+	// numbers.
+	inline bool IsPropProxyValid(int iProp ) const
+	{
+		return m_pProxies[m_pPrecalc->m_PropProxyIndices[iProp]] != 0;
+	}
+
+	inline bool IsCurProxyValid() const
+	{
+		return m_pProxies[m_pPrecalc->m_PropProxyIndices[m_iCurProp]] != 0;
+	}
+
+	inline int GetCurPropIndex() const
+	{
+		return m_iCurProp;
+	}
+
+	inline unsigned char* GetCurStructBase() const
+	{
+		return m_pProxies[m_pPrecalc->m_PropProxyIndices[m_iCurProp]]; 
+	}
+
+	inline void SeekToProp( int iProp )
+	{
+		Assert( m_bInitted );
+		
+		m_iCurProp = iProp;
+		m_pCurProp = m_pPrecalc->GetProp( iProp );
+	}
+
+	inline int GetObjectID() const
+	{
+		return m_ObjectID;
+	}
+
+	// Derived classes must implement this. The server gets one and the client gets one.
+	// It calls the proxy to move to the next datatable's data.
+	virtual void RecurseAndCallProxies( CSendNode *pNode, unsigned char *pStructBase ) = 0;
+
+
+public:
+	CSendTablePrecalc *m_pPrecalc;
+	
+	// These point at the various values that the proxies returned. They are setup once, then 
+	// the properties index them.
+	unsigned char *m_pProxies[MAX_PROXY_RESULTS];
+	unsigned char *m_pStructBase;
+	int m_iCurProp;
+
+protected:
+
+	const SendProp *m_pCurProp;
+	
+	int m_ObjectID;
+
+	bool m_bInitted;
+};
+
+template< class DTStack, class ProxyCaller >
+inline unsigned char* UpdateRoutesExplicit_Template( DTStack *pStack, ProxyCaller *caller )
+{
+	// Early out.
+	unsigned short iPropProxyIndex = pStack->m_pPrecalc->m_PropProxyIndices[pStack->m_iCurProp];
+	unsigned char **pTest = &pStack->m_pProxies[iPropProxyIndex];
+	if ( *pTest != (unsigned char*)0xFFFFFFFF )
+		return *pTest;
+	
+	// Ok.. setup this proxy.
+	unsigned char *pStructBase = pStack->m_pStructBase;
+	
+	CSendTablePrecalc::CProxyPath &proxyPath = pStack->m_pPrecalc->m_ProxyPaths[iPropProxyIndex];
+	for ( unsigned short i=0; i < proxyPath.m_nEntries; i++ )
+	{
+		CSendTablePrecalc::CProxyPathEntry *pEntry = &pStack->m_pPrecalc->m_ProxyPathEntries[proxyPath.m_iFirstEntry + i];
+		int iProxy = pEntry->m_iProxy;
+		
+		if ( pStack->m_pProxies[iProxy] == (unsigned char*)0xFFFFFFFF )
+		{
+			pStack->m_pProxies[iProxy] = ProxyCaller::CallProxy( pStack, pStructBase, pEntry->m_iDatatableProp );
+			if ( !pStack->m_pProxies[iProxy] )
+			{
+				*pTest = NULL;
+				break;
+			}			
+		}
+		
+		pStructBase = pStack->m_pProxies[iProxy];
+	}
+	
+	return pStructBase;
+}
+
+class CServerDatatableStack : public CDatatableStack
+{
+public:
+						CServerDatatableStack( CSendTablePrecalc *pPrecalc, unsigned char *pStructBase, int objectID ) :
+							CDatatableStack( pPrecalc, pStructBase, objectID )
+						{
+							m_pPrecalc = pPrecalc;
+							m_pRecipients = NULL;
+						}
+
+	inline unsigned char*	CallPropProxy( CSendNode *pNode, int iProp, unsigned char *pStructBase )
+	{
+		const SendProp *pProp = m_pPrecalc->GetDatatableProp( iProp );
+
+		CSendProxyRecipients *pRecipients;
+
+		if ( m_pRecipients && pNode->GetDataTableProxyIndex() != DATATABLE_PROXY_INDEX_NOPROXY )
+		{
+			// set recipients pointer and all clients by default
+			pRecipients = &m_pRecipients->Element( pNode->GetDataTableProxyIndex() );
+			pRecipients->SetAllRecipients();
+		}
+		else
+		{
+			// we don't care about recipients, just provide a valid pointer
+			pRecipients = &s_Recipients; 
+		}
+
+		unsigned char *pRet = (unsigned char*)pProp->GetDataTableProxyFn()( 
+			pProp,
+			pStructBase, 
+			pStructBase + pProp->GetOffset(), 
+			pRecipients,
+			GetObjectID()
+			);
+	
+		return pRet;
+	}
+
+	virtual void RecurseAndCallProxies( CSendNode *pNode, unsigned char *pStructBase )
+	{
+		// Remember where the game code pointed us for this datatable's data so 
+		m_pProxies[pNode->GetRecursiveProxyIndex()] = pStructBase;
+
+		for ( int iChild=0; iChild < pNode->GetNumChildren(); iChild++ )
+		{
+			CSendNode *pCurChild = pNode->GetChild( iChild );
+			
+			unsigned char *pNewStructBase = NULL;
+			if ( pStructBase )
+			{
+				pNewStructBase = CallPropProxy( pCurChild, pCurChild->m_iDatatableProp, pStructBase );
+			}
+
+			RecurseAndCallProxies( pCurChild, pNewStructBase );
+		}
+	}
+
+	// This can be used IF you called Init() with true for bExplicitRoutes.
+	// It is faster to use this route if you only are going to ask for a couple props.
+	// If you're going to ask for all the props, then you shouldn't use the "explicit" route.
+	class CSendProxyCaller
+	{
+	public:
+		static inline unsigned char* CallProxy( CServerDatatableStack *pStack, unsigned char *pStructBase, unsigned short iDatatableProp )
+		{
+			const SendProp *pProp = pStack->m_pPrecalc->GetDatatableProp( iDatatableProp );
+			
+			return (unsigned char*)pProp->GetDataTableProxyFn()( 
+				pProp,
+				pStructBase, 
+				pStructBase + pProp->GetOffset(), 
+				&s_Recipients,
+				pStack->GetObjectID()
+				);
+		}
+	};
+	
+	inline unsigned char* UpdateRoutesExplicit()
+	{
+		return UpdateRoutesExplicit_Template( this, (CSendProxyCaller*)NULL );
+	}
+
+	
+	inline const SendProp* GetCurProp() const
+	{
+		return m_pPrecalc->GetProp( GetCurPropIndex() );
+	}
+
+
+public:
+	
+	CSendTablePrecalc					*m_pPrecalc;
+	CUtlMemory<CSendProxyRecipients>	*m_pRecipients;
+};
+
+class CEncodeInfo : public CServerDatatableStack
+{
+public:
+	CEncodeInfo( CSendTablePrecalc *pPrecalc, unsigned char *pStructBase, int objectID, bf_write *pOut ) :
+		CServerDatatableStack( pPrecalc, pStructBase, objectID ),
+		m_DeltaBitsWriter( pOut )
+	{
+	}
+
+public:
+	CDeltaBitsWriter m_DeltaBitsWriter;
+};
+
+class DecodeInfo;
+
+typedef struct
+{
+	// Encode a value.
+	// pStruct : points at the base structure
+	// pVar    : holds data in the correct type (ie: PropVirtualsInt will have DVariant::m_Int set).
+	// pProp   : describes the property to be encoded.
+	// pOut    : the buffer to encode into.
+	// objectID: for debug output.
+	void			(*Encode)( const unsigned char *pStruct, DVariant *pVar, const SendProp *pProp, bf_write *pOut, int objectID );
+
+	// Decode a value.
+	// See the DecodeInfo class for a description of the parameters.
+	void			(*Decode)( DecodeInfo *pInfo );
+
+	// Compare the deltas in the two buffers. The property in both buffers must be fully decoded
+	int				(*CompareDeltas)( const SendProp *pProp, bf_read *p1, bf_read *p2 );
+
+	// Used for the local single-player connection to copy the data straight from the server ent into the client ent.
+	void			(*FastCopy)( 
+		const SendProp *pSendProp, 
+		const RecvProp *pRecvProp, 
+		const unsigned char *pSendData, 
+		unsigned char *pRecvData, 
+		int objectID );
+
+	// Return a string with the name of the type ("DPT_Float", "DPT_Int", etc).
+	const char*		(*GetTypeNameString)();
+
+	// Returns true if the property's value is zero.
+	// NOTE: this does NOT strictly mean that it would encode to zeros. If it were a float with
+	// min and max values, a value of zero could encode to some other integer value.
+	bool			(*IsZero)( const unsigned char *pStruct, DVariant *pVar, const SendProp *pProp );
+
+	// This writes a zero value in (ie: a value that would make IsZero return true).
+	void			(*DecodeZero)( DecodeInfo *pInfo );
+	
+	// This reades this property from stream p and returns true, if it's a zero value
+	bool			(*IsEncodedZero) ( const SendProp *pProp, bf_read *p );
+	void			(*SkipProp) ( const SendProp *pProp, bf_read *p );
+} PropTypeFns;
+
+PropTypeFns *g_PropTypeFns = nullptr;
+
+#if SOURCE_ENGINE == SE_TF2
+static const SendProp *m_nPlayerCond{nullptr};
+static const SendProp *_condition_bits{nullptr};
+static const SendProp *m_nPlayerCondEx{nullptr};
+static const SendProp *m_nPlayerCondEx2{nullptr};
+static const SendProp *m_nPlayerCondEx3{nullptr};
+static const SendProp *m_nPlayerCondEx4{nullptr};
+
+static bool is_prop_cond(const SendProp *pProp)
+{
+	return (pProp == m_nPlayerCond ||
+			pProp == _condition_bits ||
+			pProp == m_nPlayerCondEx ||
+			pProp == m_nPlayerCondEx2 ||
+			pProp == m_nPlayerCondEx3 ||
+			pProp == m_nPlayerCondEx4);
+}
+#endif
+
+#ifndef __HAS_PROXYSEND
+enum class prop_types : unsigned char
+{
+	int_,
+	short_,
+	char_,
+	unsigned_int,
+	unsigned_short,
+	unsigned_char,
+	float_,
+	vector,
+	qangle,
+	cstring,
+	ehandle,
+	bool_,
+	color32_,
+	tstring,
+	unknown
+};
+#else
+using prop_types = proxysend::prop_types;
+#endif
+
+static prop_types guess_prop_type(const SendProp *pProp, const SendTable *pTable) noexcept
+{
+#ifdef __HAS_PROXYSEND
+	if(proxysend) {
+		return proxysend->guess_prop_type(pProp, pTable);
+	}
+#endif
+
+	SendVarProxyFn pRealProxy{pProp->GetProxyFn()};
+
+#if SOURCE_ENGINE == SE_TF2
+	if(is_prop_cond(pProp)) {
+	#if defined _DEBUG
+		printf("unsigned int (is cond)\n");
+	#endif
+		return prop_types::unsigned_int;
+	}
+#endif
+
+	switch(pProp->GetType()) {
+		case DPT_Int: {
+			if(pProp->GetFlags() & SPROP_UNSIGNED) {
+				if(pRealProxy == std_proxies->m_UInt8ToInt32) {
+					if(pProp->m_nBits == 1) {
+					#if defined _DEBUG
+						printf("bool (bits == 1)\n");
+					#endif
+						return prop_types::bool_;
+					}
+
+				#if defined _DEBUG
+					printf("unsigned char (std proxy)\n");
+				#endif
+					return prop_types::unsigned_char;
+				} else if(pRealProxy == std_proxies->m_UInt16ToInt32) {
+				#if defined _DEBUG
+					printf("unsigned short (std proxy)\n");
+				#endif
+					return prop_types::unsigned_short;
+				} else if(pRealProxy == std_proxies->m_UInt32ToInt32) {
+					if(pTable && strcmp(pTable->GetName(), "DT_BaseEntity") == 0 && strcmp(pProp->GetName(), "m_clrRender") == 0) {
+					#if defined _DEBUG
+						printf("color32 (hardcode)\n");
+					#endif
+						return prop_types::color32_;
+					}
+
+				#if defined _DEBUG
+					printf("unsigned int (std proxy)\n");
+				#endif
+					return prop_types::unsigned_int;
+				} else {
+					{
+						if(pProp->m_nBits == 32) {
+							struct dummy_t {
+								unsigned int val{256};
+							} dummy;
+
+							DVariant out{};
+							pRealProxy(pProp, static_cast<const void *>(&dummy), static_cast<const void *>(&dummy.val), &out, 0, -1);
+							if(out.m_Int == 65536) {
+							#if defined _DEBUG
+								printf("color32 (proxy)\n");
+							#endif
+								return prop_types::color32_;
+							}
+						}
+					}
+
+					{
+						if(pProp->m_nBits == NUM_NETWORKED_EHANDLE_BITS) {
+							struct dummy_t {
+								EHANDLE val{};
+							} dummy;
+
+							DVariant out{};
+							pRealProxy(pProp, static_cast<const void *>(&dummy), static_cast<const void *>(&dummy.val), &out, 0, -1);
+							if(out.m_Int == INVALID_NETWORKED_EHANDLE_VALUE) {
+							#if defined _DEBUG
+								printf("ehandle (proxy)\n");
+							#endif
+								return prop_types::ehandle;
+							}
+						}
+					}
+
+				#if defined _DEBUG
+					printf("unsigned int (flag)\n");
+				#endif
+					return prop_types::unsigned_int;
+				}
+			} else {
+				if(pRealProxy == std_proxies->m_Int8ToInt32) {
+				#if defined _DEBUG
+					printf("char (std proxy)\n");
+				#endif
+					return prop_types::char_;
+				} else if(pRealProxy == std_proxies->m_Int16ToInt32) {
+				#if defined _DEBUG
+					printf("short (std proxy)\n");
+				#endif
+					return prop_types::short_;
+				} else if(pRealProxy == std_proxies->m_Int32ToInt32) {
+				#if defined _DEBUG
+					printf("int (std proxy)\n");
+				#endif
+					return prop_types::int_;
+				} else {
+					{
+						struct dummy_t {
+							short val{SHRT_MAX-1};
+						} dummy;
+
+						DVariant out{};
+						pRealProxy(pProp, static_cast<const void *>(&dummy), static_cast<const void *>(&dummy.val), &out, 0, -1);
+						if(out.m_Int == dummy.val+1) {
+						#if defined _DEBUG
+							printf("short (proxy)\n");
+						#endif
+							return prop_types::short_;
+						}
+					}
+
+				#if defined _DEBUG
+					printf("int (type)\n");
+				#endif
+					return prop_types::int_;
+				}
+			}
+		}
+		case DPT_Float:
+		return prop_types::float_;
+		case DPT_Vector: {
+			if(pProp->m_fLowValue == 0.0f && pProp->m_fHighValue == 360.0f) {
+				return prop_types::qangle;
+			} else {
+				return prop_types::vector;
+			}
+		}
+		case DPT_VectorXY:
+		return prop_types::vector;
+		case DPT_String: {
+			return prop_types::cstring;
+		}
+		case DPT_Array:
+		return prop_types::unknown;
+		case DPT_DataTable:
+		return prop_types::unknown;
+	}
+
+	return prop_types::unknown;
+}
+
+ServerClass *curr_cls = nullptr;
+SendTable *curr_table = nullptr;
+
+static bool tables_equal(const SendTable *rhs, const SendTable *lhs)
+{
+	if(rhs == lhs) {
+		return true;
+	}
+
+	return (strcmp(rhs->GetName(), lhs->GetName()) == 0);
+}
+
+static bool props_equal(const SendProp *rhs, const SendProp *lhs)
+{
+	if(rhs == lhs) {
+		return true;
+	}
+
+	if(strcmp(rhs->GetName(), lhs->GetName()) == 0 &&
+		rhs->GetType() == lhs->GetType() &&
+		rhs->GetFlags() == lhs->GetFlags() &&
+		rhs->m_nBits == lhs->m_nBits &&
+		rhs->m_fLowValue == lhs->m_fLowValue &&
+		rhs->m_fHighValue == lhs->m_fHighValue &&
+		rhs->m_nElements == lhs->m_nElements &&
+		rhs->m_ElementStride == lhs->m_ElementStride &&
+		tables_equal(rhs->GetDataTable(), lhs->GetDataTable())) {
+		if(rhs->GetType() == DPT_Array) {
+			return props_equal(rhs->GetArrayProp(), lhs->GetArrayProp());
+		} else if(rhs->GetType() == DPT_Vector ||
+			rhs->GetType() == DPT_VectorXY ||
+			rhs->GetType() == DPT_Float) {
+			//if(rhs->m_fHighLowMul == lhs->m_fHighLowMul)
+			{
+				return true;
+			}
+		} else {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+int Array_GetLength( const unsigned char *pStruct, const SendProp *pProp, int objectID )
+{
+	// Get the array length from the proxy.
+	ArrayLengthSendProxyFn proxy = pProp->GetArrayLengthProxy();
+	
+	if ( proxy )
+	{
+		int nElements = proxy( pStruct, objectID );
+		
+		// Make sure it's not too big.
+		if ( nElements > pProp->GetNumElements() )
+		{
+			Assert( false );
+			nElements = pProp->GetNumElements();
+		}
+
+		return nElements;
+	}
+	else
+	{	
+		return pProp->GetNumElements();
+	}
+}
+
+unsigned char *allocate_mem_for_type(const SendProp *pProp, prop_types type)
+{
+	unsigned char *pNewData{nullptr};
+
+	switch(type) {
+		case prop_types::unsigned_int:
+		case prop_types::int_: pNewData = (unsigned char *)new netvar_t<int>{}; break;
+		case prop_types::unsigned_short:
+		case prop_types::short_: pNewData = (unsigned char *)new netvar_t<short>{}; break;
+		case prop_types::bool_: pNewData = (unsigned char *)new netvar_t<bool>{}; break;
+		case prop_types::unsigned_char:
+		case prop_types::char_: pNewData = (unsigned char *)new netvar_t<char>{}; break;
+		case prop_types::float_: pNewData = (unsigned char *)new netvar_t<float>{}; break;
+		case prop_types::vector: pNewData = (unsigned char *)new netvar_vec_t<Vector>{}; break;
+		case prop_types::qangle: pNewData = (unsigned char *)new netvar_vec_t<QAngle>{}; break;
+		case prop_types::ehandle: pNewData = (unsigned char *)new netvar_ehndl_t<EHANDLE>{}; break;
+		case prop_types::color32_: pNewData = (unsigned char *)new netvar_clr32_t<color32>{}; break;
+		default: Host_Error("SV_CreateBaseline: SendTable_EncodeProp prop %s has unknown type.\n", pProp->GetName()); break;
+	}
+
+	return pNewData;
+}
+
+struct encode_prop_info_t
+{
+	bool found{};
+	prop_types type{};
+	const SendProp *realprop{nullptr};
+
+} encode_pop_info{};
+
+void Array_Encode( const unsigned char *pStruct, DVariant *pVar, const SendProp *pProp, bf_write *pOut, int objectID )
+{
+	SendProp *pArrayProp = pProp->GetArrayProp();
+	AssertMsg( pArrayProp, "Array_Encode: missing m_pArrayProp for SendProp '%s'.", pProp->m_pVarName );
+	
+	int nElements = Array_GetLength( pStruct, pProp, objectID );
+
+	// Write the number of elements.
+	pOut->WriteUBitLong( nElements, pProp->GetNumArrayLengthBits() );
+
+	int offset{pArrayProp->GetOffset()};
+
+	if(encode_pop_info.found) {
+		offset = encode_pop_info.realprop->GetArrayProp()->GetOffset();
+	}
+
+	unsigned char *pNewData{nullptr};
+
+	if(!encode_pop_info.found) {
+		pNewData = allocate_mem_for_type(pProp, encode_pop_info.type);
+	}
+
+	unsigned char *pCurStructOffset = (unsigned char*)pStruct + offset;
+	for ( int iElement=0; iElement < nElements; iElement++ )
+	{
+		DVariant var;
+
+		// Call the proxy to get the value, then encode.
+		pArrayProp->GetProxyFn()( pArrayProp, pStruct, pNewData ? pNewData : pCurStructOffset, &var, iElement, objectID );
+
+		g_PropTypeFns[pArrayProp->GetType()].Encode( pStruct, &var, pArrayProp, pOut, objectID ); 
+		
+		pCurStructOffset += pProp->GetElementStride();
+	}
+
+	if(pNewData) {
+		free(pNewData);
+	}
+}
+
+static FORCEINLINE void SendTable_EncodeProp( CEncodeInfo * pInfo, unsigned long iProp )
+{
+	// Call their proxy to get the property's value.
+	DVariant var;
+	
+	const SendProp *pProp = pInfo->GetCurProp();
+	unsigned char *pStructBase = pInfo->GetCurStructBase();
+
+	encode_pop_info.found = true;
+
+	int offset{pProp->GetOffset()};
+
+	encode_pop_info.realprop = nullptr;
+
+	if(curr_cls && curr_server_info && curr_server_info->cl_classid_cls &&
+		curr_cls == curr_server_info->cl_classid_cls) {
+		CSendTablePrecalc *pPrecalc = curr_server_info->tbl.m_pPrecalc;
+
+		encode_pop_info.found = false;
+
+		for(int i = 0; i < pPrecalc->GetNumProps(); ++i) {
+			const SendProp *realprop = pPrecalc->GetProp(i);
+
+			if(props_equal(realprop, pProp)) {
+				encode_pop_info.realprop = realprop;
+				offset = realprop->GetOffset();
+				encode_pop_info.found = true;
+				break;
+			}
+		}
+	}
+
+	unsigned char *pOldData = (pStructBase + offset);
+
+	unsigned char *pNewData{nullptr};
+	encode_pop_info.type = prop_types::unknown;
+
+	if(!encode_pop_info.found) {
+		if(pProp->GetType() == DPT_Array) {
+			encode_pop_info.type = guess_prop_type(pProp->GetArrayProp(), curr_table);
+		} else {
+			encode_pop_info.type = guess_prop_type(pProp, curr_table);
+			pNewData = allocate_mem_for_type(pProp, encode_pop_info.type);
+		}
+	}
+
+	pProp->GetProxyFn()( 
+		pProp,
+		pStructBase, 
+		pNewData ? pNewData : pOldData, 
+		&var, 
+		0, // iElement
+		pInfo->GetObjectID()
+		);
+
+	if(pNewData) {
+		free(pNewData);
+	}
+
+	// Write the index.
+	pInfo->m_DeltaBitsWriter.WritePropIndex( iProp );
+
+	if(pProp->GetType() == DPT_Array) {
+		Array_Encode( 
+			pStructBase, 
+			&var, 
+			pProp, 
+			pInfo->m_DeltaBitsWriter.GetBitBuf(), 
+			pInfo->GetObjectID()
+			); 
+	} else {
+		g_PropTypeFns[pProp->m_Type].Encode( 
+			pStructBase, 
+			&var, 
+			pProp, 
+			pInfo->m_DeltaBitsWriter.GetBitBuf(), 
+			pInfo->GetObjectID()
+			); 
+	}
+}
+
+
+static bool SendTable_IsPropZero( CEncodeInfo *pInfo, unsigned long iProp )
+{
+	const SendProp *pProp = pInfo->GetCurProp();
+
+	// Call their proxy to get the property's value.
+	DVariant var;
+	unsigned char *pBase = pInfo->GetCurStructBase();
+
+	encode_pop_info.found = true;
+
+	int offset{pProp->GetOffset()};
+
+	if(curr_cls && curr_server_info && curr_server_info->cl_classid_cls &&
+		curr_cls == curr_server_info->cl_classid_cls) {
+		CSendTablePrecalc *pPrecalc = curr_server_info->tbl.m_pPrecalc;
+
+		encode_pop_info.found = false;
+
+		for(int i = 0; i < pPrecalc->GetNumProps(); ++i) {
+			const SendProp *realprop = pPrecalc->GetProp(i);
+
+			if(props_equal(realprop, pProp)) {
+				offset = realprop->GetOffset();
+				encode_pop_info.found = true;
+				break;
+			}
+		}
+	}
+
+	unsigned char *pOldData = (pBase + offset);
+
+	if(!encode_pop_info.found) {
+		return true;
+	}
+
+	pProp->GetProxyFn()( 
+		pProp,
+		pBase, 
+		pOldData, 
+		&var, 
+		0, // iElement
+		pInfo->GetObjectID()
+		);
+
+	return g_PropTypeFns[pProp->m_Type].IsZero( pBase, &var, pProp );
+}
+
+bool SendTable_Encode(
+	const SendTable *pTable,
+	const void *pStruct, 
+	bf_write *pOut, 
+	int objectID,
+	CUtlMemory<CSendProxyRecipients> *pRecipients,
+	bool bNonZeroOnly
+	)
+{
+	CSendTablePrecalc *pPrecalc = pTable->m_pPrecalc;
+
+	//CServerDTITimer timer( pTable, SERVERDTI_ENCODE );
+
+	// Setup all the info we'll be walking the tree with.
+	CEncodeInfo info( pPrecalc, (unsigned char*)pStruct, objectID, pOut );
+	info.m_pRecipients = pRecipients;	// optional buffer to store the bits for which clients get what data.
+
+	info.Init();
+	
+	int iNumProps = pPrecalc->GetNumProps();
+
+	for ( int iProp=0; iProp < iNumProps; iProp++ )
+	{
+		// skip if we don't have a valid prop proxy
+		if ( !info.IsPropProxyValid( iProp ) )
+			continue;
+
+		info.SeekToProp( iProp );
+
+		// skip empty prop if we only encode non-zero values
+		if ( bNonZeroOnly && SendTable_IsPropZero(&info, iProp) )
+			continue;
+
+		SendTable_EncodeProp( &info, iProp );
+	}
+
+	return !pOut->IsOverflowed();
+}
+
+static int add_baseline_for_class(ServerClass *pClass, int entnum)
 {
 	if(pClass->m_InstanceBaselineIndex != INVALID_STRING_INDEX) {
-		return;
+		return pClass->m_InstanceBaselineIndex;
 	}
 
 	SendTable *pSendTable = pClass->m_pTable;
@@ -4934,15 +5790,14 @@ static void add_baseline_for_class(ServerClass *pClass, int entnum)
 	ALIGN4 char packedData[MAX_PACKEDENTITY_DATA] ALIGN4_POST;
 	bf_write writeBuf( "SV_CreateBaseline->writeBuf", packedData, sizeof( packedData ) );
 
+	curr_cls = pClass;
+	curr_table = pSendTable;
+	bool encoded = SendTable_Encode(pSendTable, edict->GetUnknown(), &writeBuf, entnum, NULL, false);
+	curr_table = nullptr;
+	curr_cls = nullptr;
+
 	// create basline from zero values
-	if ( !SendTable_Encode(
-		pSendTable,
-		edict->GetUnknown(),
-		&writeBuf,
-		entnum,
-		NULL,
-		false
-		) )
+	if ( !encoded )
 	{
 		Host_Error("SV_CreateBaseline: SendTable_Encode returned false (ent %d).\n", entnum);
 	}
@@ -4951,7 +5806,7 @@ static void add_baseline_for_class(ServerClass *pClass, int entnum)
 	char idString[32];
 	Q_snprintf( idString, sizeof( idString ), "%d", pClass->m_ClassID );
 
-	m_pInstanceBaselineTable->AddString(true, idString, writeBuf.GetNumBytesWritten(), packedData);
+	return m_pInstanceBaselineTable->AddString(true, idString, writeBuf.GetNumBytesWritten(), packedData);
 }
 
 DETOUR_DECL_STATIC4(DetourSV_EnsureInstanceBaseline, void, ServerClass *,pServerClass, int, iEdict, const void *,pData, int, nBytes)
@@ -4962,12 +5817,18 @@ DETOUR_DECL_STATIC4(DetourSV_EnsureInstanceBaseline, void, ServerClass *,pServer
 		server_ptr_map_t::iterator it{server_ptr_map.find(pClass)};
 		if(it != server_ptr_map.end()) {
 			serverclass_override_t &overr{*it->second};
+			curr_server_info = &overr;
 			if(overr.cl_classid_cls) {
-				add_baseline_for_class(overr.cl_classid_cls, iEdict);
+				if(overr.cl_baselineindex == INVALID_STRING_INDEX) {
+					overr.cl_baselineindex = add_baseline_for_class(overr.cl_classid_cls, iEdict);
+				}
 			}
 			if(overr.realcls) {
-				add_baseline_for_class(overr.realcls, iEdict);
+				if(overr.realcls_baselineindex == INVALID_STRING_INDEX) {
+					overr.realcls_baselineindex = add_baseline_for_class(overr.realcls, iEdict);
+				}
 			}
+			curr_server_info = nullptr;
 		}
 	}
 
@@ -5741,9 +6602,9 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 		return false;
 	}
 
-	g_pGameConf->GetMemSig("SendTable_Encode", &SendTable_EncodePtr);
-	if(SendTable_EncodePtr == nullptr) {
-		snprintf(error, maxlen, "could not get SendTable_Encode address");
+	g_pGameConf->GetMemSig("g_PropTypeFns", (void **)&g_PropTypeFns);
+	if(g_PropTypeFns == nullptr) {
+		snprintf(error, maxlen, "could not get g_PropTypeFns address");
 		return false;
 	}
 
@@ -5854,6 +6715,22 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	g_pEntityList = reinterpret_cast<CGlobalEntityList *>(gamehelpers->GetGlobalEntityList());
 
 	SH_ADD_HOOK(CGlobalEntityList, OnAddEntity, ((CGlobalEntityList *)g_pEntityList), SH_MEMBER(((CGlobalEntityListHack *)g_pEntityList), &CGlobalEntityListHack::HookOnAddEntity), false);
+
+#if SOURCE_ENGINE == SE_TF2
+	sm_sendprop_info_t info{};
+	gamehelpers->FindSendPropInfo("CTFPlayer", "m_nPlayerCond", &info);
+	m_nPlayerCond = info.prop;
+	gamehelpers->FindSendPropInfo("CTFPlayer", "_condition_bits", &info);
+	_condition_bits = info.prop;
+	gamehelpers->FindSendPropInfo("CTFPlayer", "m_nPlayerCondEx", &info);
+	m_nPlayerCondEx = info.prop;
+	gamehelpers->FindSendPropInfo("CTFPlayer", "m_nPlayerCondEx2", &info);
+	m_nPlayerCondEx2 = info.prop;
+	gamehelpers->FindSendPropInfo("CTFPlayer", "m_nPlayerCondEx3", &info);
+	m_nPlayerCondEx3 = info.prop;
+	gamehelpers->FindSendPropInfo("CTFPlayer", "m_nPlayerCondEx4", &info);
+	m_nPlayerCondEx4 = info.prop;
+#endif
 
 #if SOURCE_ENGINE == SE_LEFT4DEAD2
 	dictionary = (void_to_func<CEntityFactoryDictionary *(*)()>(EntityFactoryDictionaryPtr))();

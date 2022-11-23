@@ -120,10 +120,10 @@
 				"library" "engine"
 				"linux" "@_Z25SV_EnsureInstanceBaselineP11ServerClassiPKvi"
 			}
-			"SendTable_Encode"
+			"g_PropTypeFns"
 			{
 				"library" "engine"
-				"linux" "@_Z16SendTable_EncodePK9SendTablePKvP8bf_writeiP10CUtlMemoryI20CSendProxyRecipientsiEb"
+				"linux" "@g_PropTypeFns"
 			}
 		}
 	}

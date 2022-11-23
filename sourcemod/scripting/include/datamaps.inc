@@ -73,8 +73,8 @@ enum custom_prop_type
 #define SPROP_COORD_MP  (1 << 13)
 #define SPROP_VARINT    SPROP_NORMAL
 
-#define PROP_OFFSET_EXISTING -1
-#define PROP_OFFSET_NEW -2
+#define PROP_OFFSET_NEW -1
+#define PROP_OFFSET_EXISTING -2
 
 methodmap CustomSendtable < Handle
 {
@@ -117,16 +117,16 @@ methodmap CustomSendtable < Handle
 		this.set_client_name(tblname);
 	}
 
-	public native void add_prop_float(const char[] name, float low_value = 0.0, float high_value = HIGH_DEFAULT, int bits = 32, int flags = 0, int elements = 1, int offset = PROP_OFFSET_EXISTING);
+	public native void add_prop_float(const char[] name, float low_value = 0.0, float high_value = HIGH_DEFAULT, int bits = 32, int flags = 0, int elements = 1, int offset = PROP_OFFSET_NEW);
 
-	public native void add_prop_vector(const char[] name, float low_value = 0.0, float high_value = HIGH_DEFAULT, int bits = 32, int flags = SPROP_NOSCALE, int elements = 1, int offset = PROP_OFFSET_EXISTING);
-	public native void add_prop_qangles(const char[] name, int bits = 32, int flags = 0, int elements = 1, int offset = PROP_OFFSET_EXISTING);
+	public native void add_prop_vector(const char[] name, float low_value = 0.0, float high_value = HIGH_DEFAULT, int bits = 32, int flags = SPROP_NOSCALE, int elements = 1, int offset = PROP_OFFSET_NEW);
+	public native void add_prop_qangles(const char[] name, int bits = 32, int flags = 0, int elements = 1, int offset = PROP_OFFSET_NEW);
 
-	public native void add_prop_int(const char[] name, int size, int bits = -1, int flags = 0, int elements = 1, int offset = PROP_OFFSET_EXISTING);
-	public void add_prop_bool(const char[] name, int flags = 0, int elements = 1, int offset = PROP_OFFSET_EXISTING)
+	public native void add_prop_int(const char[] name, int size, int bits = -1, int flags = 0, int elements = 1, int offset = PROP_OFFSET_NEW);
+	public void add_prop_bool(const char[] name, int flags = 0, int elements = 1, int offset = PROP_OFFSET_NEW)
 	{ this.add_prop_int(name, 1, 1, SPROP_UNSIGNED|flags, elements, offset); }
 
-	public native void add_prop_ehandle(const char[] name, int flags = 0, int elements = 1, int offset = PROP_OFFSET_EXISTING);
+	public native void add_prop_ehandle(const char[] name, int flags = 0, int elements = 1, int offset = PROP_OFFSET_NEW);
 };
 
 methodmap CustomDatamap < Handle
