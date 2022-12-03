@@ -148,11 +148,11 @@
 		{
 			"CBaseEntity::PostConstructor"
 			{
-				"linux" "27"
+				"linux" "29"
 			}
 			"CBaseEntity::UpdateOnRemove"
 			{
-				"linux" "109"
+				"linux" "111"
 			}
 		}
 	}

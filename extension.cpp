@@ -29,8 +29,6 @@
  * Version: $Id$
  */
 
-#define SOURCEHOOK_BEING_STUPID
-
 #define swap V_swap
 
 #if SOURCE_ENGINE == SE_TF2
@@ -1565,6 +1563,8 @@ struct unexclude_prop_t
 class custom_SendTable : public SendTable
 {
 public:
+	using SendTable::SendTable;
+
 	custom_SendTable()
 		: SendTable()
 	{
@@ -1624,19 +1624,57 @@ static void SendProxy_Empty( const SendProp *pProp, const void *pStruct, const v
 {
 }
 
+extern const char *s_ElementNames[MAX_ARRAY_ELEMENTS];
+
+#define SPROP_ARRAY3 (1 << (SPROP_NUMFLAGBITS+1))
+
+#define SPROP_FAKES (SPROP_ARRAY3)
+
 class custom_SendProp : public SendProp
 {
 public:
 	struct extra_data_t
 	{
+		extra_data_t() = default;
+		extra_data_t(extra_data_t &&) = default;
+		extra_data_t &operator=(extra_data_t &&) = default;
+		extra_data_t(const extra_data_t &) = default;
+		extra_data_t &operator=(const extra_data_t &) = default;
+
 		bool absoffset = false;
 		fieldtype_t type = FIELD_VOID;
 		int elementCount = 1;
-		int var_size = 0;
+		int length = 0;
 	};
 
-	custom_SendProp(const custom_SendProp &) = delete;
-	custom_SendProp &operator=(const custom_SendProp &) = delete;
+	custom_SendProp(const custom_SendProp &other)
+	{
+		m_pVarName = nullptr;
+
+		SetExtraData(new extra_data_t{});
+
+		operator=(other);
+	}
+
+	custom_SendProp &operator=(const custom_SendProp &other)
+	{
+		const void *pExtraData = other.GetExtraData();
+		const char *pVarName = other.m_pVarName;
+		clear_name();
+		const void *pOldExtraData = GetExtraData();
+		SendProp::operator=(other);
+		m_pVarName = nullptr;
+		set_name(pVarName);
+		if(!pOldExtraData) {
+			SetExtraData(new extra_data_t{});
+		} else {
+			SetExtraData(pOldExtraData);
+		}
+		if(pExtraData) {
+			*(extra_data_t *)GetExtraData() = *(extra_data_t *)pExtraData;
+		}
+		return *this;
+	}
 
 	custom_SendProp(custom_SendProp &&other)
 	{ operator=(std::move(other)); }
@@ -1662,7 +1700,13 @@ public:
 		strncpy((char *)m_pVarName, name.c_str(), len);
 		((char *)m_pVarName)[len] = '\0';
 	}
-	
+
+	void set_flags(int flags)
+	{
+		flags &= ~SPROP_FAKES;
+		SendProp::SetFlags(flags);
+	}
+
 	void clear_name()
 	{
 		if(m_pVarName != nullptr) {
@@ -1720,6 +1764,30 @@ public:
 	}
 };
 
+class NetworkVar_String
+{
+public:
+	static size_t size(size_t L)
+	{
+		return (sizeof(char) * L);
+	}
+	NetworkVar_String(size_t L) { GetPtr()[0] = '\0'; }
+	operator const char*() const { return GetPtr(); }
+	const char* Get() const { return GetPtr(); }
+	char* GetForModify()
+	{
+		NetworkStateChanged();
+		return GetPtr();
+	}
+protected:
+	inline void NetworkStateChanged()
+	{
+	}
+private:
+	char *GetPtr() const
+	{ return (char *)this; }
+};
+
 template <typename T>
 class NetworkVar_ArrayUnknownSize
 {
@@ -1770,6 +1838,9 @@ protected:
 	{ return (T *)this; }
 };
 
+template <>
+class NetworkVar_ArrayUnknownSize<char *>;
+
 #include <tier1/checksum_crc.h>
 
 CRC32_t *g_SendTableCRC{nullptr};
@@ -1779,6 +1850,8 @@ CRC32_t SendTable_ComputeCRC();
 
 template <typename T>
 using netvar_t = CNetworkVarBase<T, NetworkVar_Generic>;
+
+using netvar_str_t = NetworkVar_String;
 
 template <typename T>
 using netvar_vec_t = CNetworkVectorBase<T, NetworkVar_Generic>;
@@ -1844,7 +1917,7 @@ int get_var_size<Vector>(int elementCount)
 
 struct serverclass_override_t : public hookobj_t
 {
-	serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_);
+	serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_, bool nobase_);
 	~serverclass_override_t() override;
 	
 	IServerNetworkable *HookCreate(const char *classname);
@@ -1970,6 +2043,13 @@ struct serverclass_override_t : public hookobj_t
 						((netvar_arr_t<int> *)ptr)->Destruct(data.elementCount);
 					}
 				} break;
+				case FIELD_STRING: {
+					if(data.elementCount == 1) {
+						((netvar_str_t *)ptr)->~netvar_str_t();
+					} else {
+						
+					}
+				} break;
 			}
 		}
 	}
@@ -2040,6 +2120,13 @@ struct serverclass_override_t : public hookobj_t
 						new (ptr) netvar_arr_t<int>{data.elementCount};
 					}
 				} break;
+				case FIELD_STRING: {
+					if(data.elementCount == 1) {
+						new (ptr) netvar_str_t{data.length};
+					} else {
+						
+					}
+				} break;
 			}
 		}
 	}
@@ -2102,14 +2189,12 @@ struct serverclass_override_t : public hookobj_t
 		return -1;
 	}
 
-	template <typename T>
-	custom_SendProp *emplace_prop(const std::string &name, int offset, int elementCount)
+	custom_SendProp *emplace_prop(const std::string &name, int offset, int elementCount, int var_size)
 	{
 		props.emplace_back();
 		custom_SendProp *prop = &props.back();
 		update_props();
 		prop->set_name(name);
-		int var_size{get_var_size<T>(elementCount)};
 		custom_SendProp::extra_data_t &data{prop->extra_data()};
 		if(offset == PROP_OFFSET_EXISTING) {
 			offset = get_prop_offset(name.c_str());
@@ -2128,9 +2213,15 @@ struct serverclass_override_t : public hookobj_t
 			prop->SetOffset(size);
 			size += var_size;
 		}
-		data.var_size = var_size;
 		data.elementCount = elementCount;
 		return prop;
+	}
+
+	template <typename T>
+	custom_SendProp *emplace_prop(const std::string &name, int offset, int elementCount)
+	{
+		int var_size{get_var_size<T>(elementCount)};
+		return emplace_prop(name, offset, elementCount, var_size);
 	}
 
 	custom_SendProp &add_prop_array(const std::string &name, int elementCount, int elementStride)
@@ -2152,13 +2243,68 @@ struct serverclass_override_t : public hookobj_t
 		return prop;
 	}
 
-	void setup_array(const std::string &name, custom_SendProp &prop, int elementCount, int elementStride)
+	custom_SendProp &add_prop_array3(const std::string &name, int elementCount, int elementStride)
+	{
+		tables_props.emplace_back();
+		std::vector<custom_SendProp> &table_props{tables_props.back()};
+		table_props.resize(elementCount + 1);
+
+		table_props[0] = std::move(props.back());
+		props.pop_back();
+
+		custom_SendProp &prop{*emplace_prop()};
+		prop.m_Type = DPT_DataTable;
+		prop.set_name(name);
+		prop.SetOffset(table_props[0].GetOffset());
+		prop.SetDataTableProxyFn(std_proxies->m_DataTableToDataTable);
+		prop.SetFlags(SPROP_PROXY_ALWAYS_YES);
+		prop.SetArrayProp(&table_props[0]);
+
+		for(int i = 0; i < elementCount; ++i) {
+			custom_SendProp &child{table_props[i+1]};
+			child = table_props[0];
+			child.SetOffset(i * elementStride);
+			child.set_name(s_ElementNames[i]);
+			child.m_pParentArrayPropName = table_props[0].m_pVarName;
+		}
+
+		std::unique_ptr<custom_SendTable> table{new custom_SendTable{table_props.data()+1, elementCount, nullptr}};
+		table->set_name(name);
+		prop.SetDataTable(&(*table));
+
+		tables.emplace_back(std::move(table));
+
+		prop.extra_data() = table_props[0].extra_data();
+
+		return prop;
+	}
+
+	void setup_array(const std::string &name, custom_SendProp &prop, int elementCount, int elementStride, int flags)
 	{
 		if(elementCount <= 1) {
 			return;
 		}
 
-		add_prop_array(name, elementCount, elementStride);
+		if(flags & SPROP_ARRAY3) {
+			add_prop_array3(name, elementCount, elementStride);
+		} else {
+			add_prop_array(name, elementCount, elementStride);
+		}
+	}
+
+	void add_prop_string(const std::string &name, int bufferLen, int flags, int offset)
+	{
+		custom_SendProp &prop{*emplace_prop(name, offset, 1, NetworkVar_String::size(bufferLen))};
+
+		prop.set_flags(flags);
+
+		prop.SetProxyFn(SendProxy_StringToString);
+
+		prop.m_Type = DPT_String;
+
+		prop.extra_data().type = FIELD_STRING;
+
+		prop.extra_data().length = bufferLen;
 	}
 
 	void add_prop_qangles(const std::string &name, int nBits, int flags, int elementCount, int offset)
@@ -2169,7 +2315,7 @@ struct serverclass_override_t : public hookobj_t
 
 		custom_SendProp &prop{*emplace_prop<QAngle>(name, offset, elementCount)};
 
-		prop.SetFlags(flags);
+		prop.set_flags(flags);
 
 		prop.SetProxyFn(SendProxy_QAngles);
 
@@ -2184,7 +2330,7 @@ struct serverclass_override_t : public hookobj_t
 
 		int elementStride = sizeof(QAngle);
 
-		setup_array(name, prop, elementCount, elementStride);
+		setup_array(name, prop, elementCount, elementStride, flags);
 	}
 
 	void add_prop_vector(const std::string &name, float fLowValue, float fHighValue, int nBits, int flags, int elementCount, int offset)
@@ -2200,7 +2346,7 @@ struct serverclass_override_t : public hookobj_t
 
 		custom_SendProp &prop{*emplace_prop<Vector>(name, offset, elementCount)};
 
-		prop.SetFlags(flags);
+		prop.set_flags(flags);
 
 		prop.SetProxyFn(std_proxies->m_VectorToVector);
 
@@ -2219,7 +2365,7 @@ struct serverclass_override_t : public hookobj_t
 
 		int elementStride = sizeof(Vector);
 
-		setup_array(name, prop, elementCount, elementStride);
+		setup_array(name, prop, elementCount, elementStride, flags);
 	}
 
 	void add_prop_float(const std::string &name, float fLowValue, float fHighValue, int nBits, int flags, int elementCount, int offset)
@@ -2249,7 +2395,7 @@ struct serverclass_override_t : public hookobj_t
 
 		prop.SetProxyFn(std_proxies->m_FloatToFloat);
 
-		prop.SetFlags(flags);
+		prop.set_flags(flags);
 
 		prop.m_nBits = actual_bits;
 
@@ -2262,7 +2408,7 @@ struct serverclass_override_t : public hookobj_t
 
 		int elementStride = sizeof(float);
 
-		setup_array(name, prop, elementCount, elementStride);
+		setup_array(name, prop, elementCount, elementStride, flags);
 	}
 
 	custom_SendProp &add_prop_int(const std::string &name, int sizeofVar, int nBits, int flags, SendVarProxyFn proxy, int elementCount, int offset)
@@ -2300,14 +2446,14 @@ struct serverclass_override_t : public hookobj_t
 			}
 		}
 
-		prop->SetFlags(flags);
+		prop->set_flags(flags);
 		prop->SetProxyFn(proxy);
 		prop->m_nBits = nBits;
 		prop->m_Type = DPT_Int;
 
 		int elementStride = sizeofVar;
 
-		setup_array(name, *prop, elementCount, elementStride);
+		setup_array(name, *prop, elementCount, elementStride, flags);
 
 		return *prop;
 	}
@@ -2344,9 +2490,12 @@ struct serverclass_override_t : public hookobj_t
 	std::string tbl_name{};
 	custom_SendTable tbl{};
 	std::string tbl_cl_name{};
+	bool nobase = false;
 	int cl_classid = -1;
 	int classid = -1;
 	std::vector<custom_SendProp> props{};
+	std::vector<std::vector<custom_SendProp>> tables_props{};
+	std::vector<std::unique_ptr<custom_SendTable>> tables{};
 	ServerClass *realcls = nullptr;
 	int realcls_baselineindex = INVALID_STRING_INDEX;
 	ServerClass *cl_classid_cls = nullptr;
@@ -3076,8 +3225,8 @@ static void SendTable_TermTable( SendTable *pTable )
 	delete pTable->m_pPrecalc;
 }
 
-serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_)
-	: hooked_fac{fac_}, clsname{std::move(clsname_)}, realcls{realcls_}
+serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string &&clsname_, ServerClass *realcls_, bool nobase_)
+	: hooked_fac{fac_}, clsname{std::move(clsname_)}, realcls{realcls_}, nobase{nobase_}
 {
 	if(CEntityFactoryDictionary::is_factory_custom(hooked_fac)) {
 		fac_is_sp = true;
@@ -3091,13 +3240,15 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 	server_ptr_map.emplace((ServerClass *)&cls, this);
 
 	counterid = classoverridecounter++;
-	
-	custom_SendProp *prop = emplace_prop();
-	prop->m_Type = DPT_DataTable;
-	prop->set_name("baseclass"s);
-	prop->SetOffset(0);
-	prop->SetDataTableProxyFn(std_proxies->m_DataTableToDataTable);
-	prop->SetFlags(SPROP_PROXY_ALWAYS_YES|SPROP_COLLAPSIBLE);
+
+	if(!nobase) {
+		custom_SendProp *prop = emplace_prop();
+		prop->m_Type = DPT_DataTable;
+		prop->set_name("baseclass"s);
+		prop->SetOffset(0);
+		prop->SetDataTableProxyFn(std_proxies->m_DataTableToDataTable);
+		prop->SetFlags(SPROP_PROXY_ALWAYS_YES|SPROP_COLLAPSIBLE);
+	}
 	
 	cls.m_pTable = &tbl;
 	cls.m_InstanceBaselineIndex = INVALID_STRING_INDEX;
@@ -3113,10 +3264,17 @@ serverclass_override_t::serverclass_override_t(IEntityFactory *fac_, std::string
 		init();
 		cls_inited = true;
 	} else {
-		props[0].SetDataTable(CBaseEntity_ServerClass->m_pTable);
-		
-		tbl.set_name("DT_BaseEntity"s);
-		cls.set_name("CBaseEntity"s);
+		if(!nobase) {
+			props[0].SetDataTable(CBaseEntity_ServerClass->m_pTable);
+		}
+
+		std::string tmp_cls_name{"__pending_svcls_"s};
+		tmp_cls_name += std::to_string(counterid);
+		cls.set_name(tmp_cls_name);
+
+		std::string tmp_tbl_name{"__pending_tbl_"s};
+		tmp_tbl_name += std::to_string(counterid);
+		tbl.set_name(tmp_tbl_name);
 	}
 }
 
@@ -3211,7 +3369,7 @@ void *DoPvAllocEntPrivateData(long cb)
 	if(curr_data_info != nullptr) {
 		new_cb += curr_data_info->size;
 	}
-	
+
 	return calloc(1, new_cb);
 }
 
@@ -3290,7 +3448,7 @@ void serverclass_override_t::update_offsets(int &base)
 		base = largest_offset;
 	}
 
-	for(std::size_t i{1}; i < props.size(); ++i) {
+	for(std::size_t i{nobase ? 0 : 1}; i < props.size(); ++i) {
 		custom_SendProp &prop{props[i]};
 		if(prop.GetType() == DPT_Array ||
 			prop.extra_data().absoffset) {
@@ -3708,6 +3866,25 @@ cell_t CustomSendtableadd_prop_qangles(IPluginContext *pContext, const cell_t *p
 	return 0;
 }
 
+cell_t CustomSendtableadd_prop_string(IPluginContext *pContext, const cell_t *params)
+{
+	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
+	
+	serverclass_override_t *obj = nullptr;
+	HandleError err = handlesys->ReadHandle(params[1], serverclass_handle, &security, (void **)&obj);
+	if(err != HandleError_None)
+	{
+		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
+	}
+	
+	char *name_ptr = nullptr;
+	pContext->LocalToString(params[2], &name_ptr);
+
+	std::string name{name_ptr};
+	obj->add_prop_string(name, params[3], params[4], params[5]);
+	return 0;
+}
+
 cell_t CustomSendtableadd_prop_float(IPluginContext *pContext, const cell_t *params)
 {
 	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
@@ -4074,7 +4251,7 @@ cell_t CustomSendtablefrom_classname(IPluginContext *pContext, const cell_t *par
 	}
 
 	std::string clsname{classname};
-	serverclass_override_t *obj = new serverclass_override_t{factory, std::move(clsname), netclass};
+	serverclass_override_t *obj = new serverclass_override_t{factory, std::move(clsname), netclass, params[3]};
 	Handle_t hndl = handlesys->CreateHandle(serverclass_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;
 	obj->pContext = pContext;
@@ -4116,7 +4293,7 @@ cell_t CustomSendtablefrom_factory(IPluginContext *pContext, const cell_t *param
 		}
 	}
 
-	serverclass_override_t *obj = new serverclass_override_t{factory, std::move(name), netclass};
+	serverclass_override_t *obj = new serverclass_override_t{factory, std::move(name), netclass, params[3]};
 	Handle_t hndl = handlesys->CreateHandle(serverclass_handle, obj, pContext->GetIdentity(), myself->GetIdentity(), nullptr);
 	obj->hndl = hndl;
 	obj->pContext = pContext;
@@ -4342,6 +4519,7 @@ sp_nativeinfo_t natives[] =
 	{"CustomSendtable.add_prop_ehandle", CustomSendtableadd_prop_ehandle},
 	{"CustomSendtable.add_prop_vector", CustomSendtableadd_prop_vector},
 	{"CustomSendtable.add_prop_qangles", CustomSendtableadd_prop_qangles},
+	{"CustomSendtable.add_prop_string", CustomSendtableadd_prop_string},
 	{"CustomDatamap.from_classname", CustomDatamapfrom_classname},
 	{"CustomDatamap.from_factory", CustomDatamapfrom_factory},
 	{"CustomDatamap.add_prop", CustomDatamapadd_prop},
@@ -4477,9 +4655,7 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	dictionary = (CEntityFactoryDictionary *)servertools->GetEntityFactoryDictionary();
 	dictionary->init_hooks();
 #endif
-#ifndef SOURCEHOOK_BEING_STUPID
-	SH_ADD_HOOK(IVEngineServer, PvAllocEntPrivateData, engine, SH_STATIC(&HookPvAllocEntPrivateData), false);
-#endif
+	SH_ADD_HOOK(IVEngineServer, PvAllocEntPrivateData, engine, SH_STATIC(HookPvAllocEntPrivateData), false);
 	GET_V_IFACE_ANY(GetServerFactory, gamedll, IServerGameDLL, INTERFACEVERSION_SERVERGAMEDLL)
 	GET_V_IFACE_ANY(GetEngineFactory, netstringtables, INetworkStringTableContainer, INTERFACENAME_NETWORKSTRINGTABLESERVER)
 	g_pServerClassHead = gamedll->GetAllServerClasses();
@@ -5934,18 +6110,20 @@ void serverclass_override_t::set_client_table_name(std::string &&name)
 
 void serverclass_override_t::init()
 {
-	props[0].SetDataTable(realcls->m_pTable);
+	if(!nobase) {
+		props[0].SetDataTable(realcls->m_pTable);
+	}
 
 	if(tbl_name.empty()) {
 		tbl_name = realcls->m_pTable->m_pNetTableName;
-		tbl_name += "_custom_";
+		tbl_name += "_custom_"s;
 		tbl_name += std::to_string(counterid);
 	}
 	tbl.set_name(tbl_name);
 
 	if(cls_name.empty()) {
 		cls_name = realcls->m_pNetworkName;
-		cls_name += "_custom_";
+		cls_name += "_custom_"s;
 		cls_name += std::to_string(counterid);
 	}
 	cls.set_name(cls_name);
@@ -6695,15 +6873,6 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	}
 #endif
 
-#ifdef SOURCEHOOK_BEING_STUPID
-	{
-		void **vtable = *(void ***)engine;
-		int index = vfunc_index(&IVEngineServer::PvAllocEntPrivateData);
-		pPvAllocEntPrivateData = DETOUR_CREATE_MEMBER(DetourPvAllocEntPrivateData, vtable[index])
-		pPvAllocEntPrivateData->EnableDetour();
-	}
-#endif
-
 	original_crc = *g_SendTableCRC;
 
 	invalid_crc = CRC32_ProcessSingleBuffer("no", 3);
@@ -6892,7 +7061,7 @@ CON_COMMAND(dump_dt_precalc, "")
 	}
 
 	ServerClass *pClass = gamehelpers->FindServerClass(cls);
-	if (!pClass)
+	if (!pClass || !pClass->m_pTable->m_pPrecalc)
 	{
 		META_CONPRINT("invalid cls\n");
 		return;

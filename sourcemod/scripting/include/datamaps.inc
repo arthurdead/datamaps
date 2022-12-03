@@ -73,13 +73,17 @@ enum custom_prop_type
 #define SPROP_COORD_MP  (1 << 13)
 #define SPROP_VARINT    SPROP_NORMAL
 
+#define SPROP_NUMFLAGBITS 17
+
+#define SPROP_ARRAY3 (1 << (SPROP_NUMFLAGBITS+1))
+
 #define PROP_OFFSET_NEW -1
 #define PROP_OFFSET_EXISTING -2
 
 methodmap CustomSendtable < Handle
 {
-	public static native CustomSendtable from_classname(const char[] classname, const char[] forced = NULL_STRING);
-	public static native CustomSendtable from_factory(CustomEntityFactory fac, const char[] forced = NULL_STRING);
+	public static native CustomSendtable from_classname(const char[] classname, const char[] forced = NULL_STRING, bool nobase = false);
+	public static native CustomSendtable from_factory(CustomEntityFactory fac, const char[] forced = NULL_STRING, bool nobase = false);
 
 	public native void unexclude_prop(const char[] dtname, const char[] name);
 	public native void set_base_class(const char[] netname);
@@ -127,6 +131,8 @@ methodmap CustomSendtable < Handle
 	{ this.add_prop_int(name, 1, 1, SPROP_UNSIGNED|flags, elements, offset); }
 
 	public native void add_prop_ehandle(const char[] name, int flags = 0, int elements = 1, int offset = PROP_OFFSET_NEW);
+
+	public native void add_prop_string(const char[] name, int length, int flags = 0, int offset = PROP_OFFSET_NEW);
 };
 
 methodmap CustomDatamap < Handle
